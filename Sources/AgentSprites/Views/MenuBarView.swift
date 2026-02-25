@@ -3,6 +3,7 @@ import AgentSpritesCore
 
 struct MenuBarView: View {
     @ObservedObject var viewModel: SessionViewModel
+    @ObservedObject var blobCoordinator: BlobCoordinator
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -15,6 +16,20 @@ struct MenuBarView: View {
             }
             .padding(.horizontal, 12)
             .padding(.top, 8)
+
+            // Floating blobs toggle
+            Toggle(isOn: $blobCoordinator.isEnabled) {
+                Label("Floating Blobs", systemImage: "circle.hexagongrid.fill")
+            }
+            .toggleStyle(.switch)
+            .padding(.horizontal, 12)
+
+            // Debug ledges toggle
+            Toggle(isOn: $blobCoordinator.debugLedgesEnabled) {
+                Label("Debug Ledges", systemImage: "line.horizontal.3")
+            }
+            .toggleStyle(.switch)
+            .padding(.horizontal, 12)
 
             Divider()
 

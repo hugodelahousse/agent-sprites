@@ -36,6 +36,19 @@
 - Test models and state machine logic in AgentSpritesCore
 - Mock XPC connections for integration tests
 
+## Debugging & Logging
+The CLI uses `os.Logger` (subsystem: `com.agentsprites.cli`) for unified logging.
+
+**Stream logs in real-time:**
+```bash
+log stream --predicate 'subsystem == "com.agentsprites.cli"' --level debug 2>&1 | tee /tmp/agentsprites-debug.log
+```
+
+**View recent logs:**
+```bash
+log show --predicate 'subsystem == "com.agentsprites.cli"' --last 10m --level debug
+```
+
 ## Common Issues
 - XPC requires code signing for production
 - launchd plist must be in ~/Library/LaunchAgents for user agents

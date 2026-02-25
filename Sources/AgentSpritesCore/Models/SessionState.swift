@@ -35,7 +35,7 @@ public enum SessionStatus: String, Codable, Sendable {
 }
 
 /// Represents the state of a single Claude Code session
-public struct SessionState: Codable, Sendable, Identifiable {
+public struct SessionState: Codable, Sendable, Identifiable, Equatable {
     public let id: String  // session_id from Claude Code
     public var status: SessionStatus
     public var workingDirectory: String
@@ -43,6 +43,8 @@ public struct SessionState: Codable, Sendable, Identifiable {
     public var lastEventName: String?
     public var tty: String?  // TTY device path for terminal focusing
     public var bundleId: String?  // App bundle ID for activation
+    public var summary: String?  // Session summary from Claude Code
+    public var gitBranch: String?  // Git branch name
 
     public init(
         id: String,
@@ -51,7 +53,9 @@ public struct SessionState: Codable, Sendable, Identifiable {
         lastUpdated: Date = Date(),
         lastEventName: String? = nil,
         tty: String? = nil,
-        bundleId: String? = nil
+        bundleId: String? = nil,
+        summary: String? = nil,
+        gitBranch: String? = nil
     ) {
         self.id = id
         self.status = status
@@ -60,6 +64,8 @@ public struct SessionState: Codable, Sendable, Identifiable {
         self.lastEventName = lastEventName
         self.tty = tty
         self.bundleId = bundleId
+        self.summary = summary
+        self.gitBranch = gitBranch
     }
 
     /// Short display name derived from working directory

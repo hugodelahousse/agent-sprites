@@ -15,6 +15,9 @@ public struct HookEvent: Codable, Sendable {
     public let notificationType: String?
     public let message: String?
 
+    // Session metadata fields
+    public let transcriptPath: String?
+
     enum CodingKeys: String, CodingKey {
         case hookEventName = "hook_event_name"
         case sessionId = "session_id"
@@ -24,6 +27,7 @@ public struct HookEvent: Codable, Sendable {
         case error
         case notificationType = "notification_type"
         case message
+        case transcriptPath = "transcript_path"
     }
 
     public init(
@@ -34,7 +38,8 @@ public struct HookEvent: Codable, Sendable {
         toolInput: String? = nil,
         error: String? = nil,
         notificationType: String? = nil,
-        message: String? = nil
+        message: String? = nil,
+        transcriptPath: String? = nil
     ) {
         self.hookEventName = hookEventName
         self.sessionId = sessionId
@@ -44,6 +49,7 @@ public struct HookEvent: Codable, Sendable {
         self.error = error
         self.notificationType = notificationType
         self.message = message
+        self.transcriptPath = transcriptPath
     }
 
     /// Parse a HookEvent from JSON data (typically from stdin)

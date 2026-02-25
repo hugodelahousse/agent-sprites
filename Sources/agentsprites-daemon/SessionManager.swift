@@ -7,7 +7,7 @@ actor SessionManager {
     private var doneTimers: [String: Task<Void, Never>] = [:]
 
     /// Update a session based on a hook event
-    func updateSession(sessionId: String, eventName: String, workingDirectory: String, tty: String?, bundleId: String?) -> Bool {
+    func updateSession(sessionId: String, eventName: String, workingDirectory: String, tty: String?, bundleId: String?, summary: String?, gitBranch: String?) -> Bool {
         // Cancel any pending done->idle timer for this session
         doneTimers[sessionId]?.cancel()
         doneTimers[sessionId] = nil
@@ -31,12 +31,18 @@ actor SessionManager {
             if !workingDirectory.isEmpty {
                 session.workingDirectory = workingDirectory
             }
-            // Update tty and bundleId if provided (keep existing if nil)
+            // Update optional fields if provided (keep existing if nil)
             if let tty = tty {
                 session.tty = tty
             }
             if let bundleId = bundleId {
                 session.bundleId = bundleId
+            }
+            if let summary = summary {
+                session.summary = summary
+            }
+            if let gitBranch = gitBranch {
+                session.gitBranch = gitBranch
             }
             store.sessions[sessionId] = session
         } else {
@@ -47,7 +53,9 @@ actor SessionManager {
                 lastUpdated: Date(),
                 lastEventName: eventName,
                 tty: tty,
-                bundleId: bundleId
+                bundleId: bundleId,
+                summary: summary,
+                gitBranch: gitBranch
             )
             store.sessions[sessionId] = session
         }

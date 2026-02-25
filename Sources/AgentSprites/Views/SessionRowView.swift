@@ -12,13 +12,27 @@ struct SessionRowView: View {
 
             // Session info
             VStack(alignment: .leading, spacing: 2) {
-                Text(session.displayName)
-                    .font(.system(.body, design: .monospaced))
+                // Show summary if available, otherwise folder name
+                Text(session.summary ?? session.displayName)
+                    .font(.system(.body, design: .default))
                     .lineLimit(1)
 
-                Text(session.status.displayName)
-                    .font(.caption)
-                    .foregroundColor(statusColor)
+                HStack(spacing: 6) {
+                    Text(session.status.displayName)
+                        .font(.caption)
+                        .foregroundColor(statusColor)
+
+                    // Show git branch if available
+                    if let branch = session.gitBranch, !branch.isEmpty {
+                        Text("•")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Label(branch, systemImage: "arrow.triangle.branch")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                    }
+                }
             }
 
             Spacer()
@@ -43,10 +57,16 @@ struct SessionRowView: View {
 
     private var debugTooltip: String {
         var lines: [String] = []
+        if let summary = session.summary {
+            lines.append("Summary: \(summary)")
+        }
+        lines.append("Directory: \(session.workingDirectory)")
+        if let branch = session.gitBranch, !branch.isEmpty {
+            lines.append("Branch: \(branch)")
+        }
         lines.append("Session: \(session.id)")
         lines.append("TTY: \(session.tty ?? "nil")")
         lines.append("BundleID: \(session.bundleId ?? "nil")")
-        lines.append("Directory: \(session.workingDirectory)")
         return lines.joined(separator: "\n")
     }
 

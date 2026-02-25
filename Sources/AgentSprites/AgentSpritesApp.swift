@@ -5,14 +5,18 @@ import os.log
 @main
 struct AgentSpritesApp: App {
     @StateObject private var viewModel = SessionViewModel()
+    @StateObject private var blobCoordinator = BlobCoordinator()
 
     var body: some Scene {
         MenuBarExtra {
-            MenuBarView(viewModel: viewModel)
+            MenuBarView(viewModel: viewModel, blobCoordinator: blobCoordinator)
         } label: {
             Label("AgentSprites", systemImage: viewModel.menuBarIcon)
         }
         .menuBarExtraStyle(.window)
+        .onChange(of: viewModel.sessions) { newSessions in
+            blobCoordinator.updateSessions(newSessions)
+        }
     }
 }
 

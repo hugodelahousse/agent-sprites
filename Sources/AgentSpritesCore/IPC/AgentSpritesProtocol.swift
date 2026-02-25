@@ -10,6 +10,8 @@ import Foundation
     ///   - workingDirectory: The current working directory of the session
     ///   - tty: The TTY device path for terminal focusing (optional)
     ///   - bundleId: The app bundle ID for activation (optional)
+    ///   - summary: Session summary from Claude Code (optional)
+    ///   - gitBranch: Git branch name (optional)
     ///   - reply: Callback with success status
     func updateSession(
         sessionId: String,
@@ -17,6 +19,8 @@ import Foundation
         workingDirectory: String,
         tty: String?,
         bundleId: String?,
+        summary: String?,
+        gitBranch: String?,
         reply: @escaping (Bool) -> Void
     )
 
