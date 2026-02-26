@@ -2,15 +2,15 @@ import SwiftUI
 
 /// Available animation states for preview
 enum PreviewState: String, CaseIterable, Identifiable {
-    case idle = "idle"
-    case working = "working"
-    case moving = "moving"
-    case waitingForInput = "waitingForInput"
-    case waitingForPermission = "waitingForPermission"
-    case error = "error"
-    case done = "done"
-    case dragging = "dragging"
-    case falling = "falling"
+    case idle
+    case working
+    case moving
+    case waitingForInput
+    case waitingForPermission
+    case error
+    case done
+    case dragging
+    case falling
 
     var id: String { rawValue }
 
@@ -41,10 +41,13 @@ struct SettingsView: View {
                 Text("Character Settings")
                     .font(.headline)
                 Spacer()
-                Button(action: { dismiss() }) {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundColor(.secondary)
-                }
+                Button(
+                    action: { dismiss() },
+                    label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.secondary)
+                    }
+                )
                 .buttonStyle(.plain)
             }
             .padding()

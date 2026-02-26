@@ -1,0 +1,21 @@
+# SwiftFormat configuration for AgentSprites
+
+--swiftversion 5.9
+
+# File options
+--exclude .build
+
+# Format options
+--indent 4
+--indentcase false
+--trimwhitespace always
+--voidtype void
+--semicolons never
+--commas always
+--wrapcollections before-first
+--maxwidth 120
+
+# Disable rules that conflict with project style
+--disable wrapMultilineStatementBraces
+--disable blankLinesAtStartOfScope
+--disable blankLinesAtEndOfScope

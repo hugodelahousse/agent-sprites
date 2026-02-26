@@ -1,6 +1,9 @@
 import SwiftUI
 import AppKit
 import AgentSpritesCore
+import os.log
+
+private let logger = Logger(subsystem: "com.agentsprites.app", category: "BlobView")
 
 /// SwiftUI view rendering a slime sprite
 struct BlobView: View {
@@ -10,19 +13,23 @@ struct BlobView: View {
     var rotation: Double = 0  // Radians
 
     var body: some View {
-        Group {
-            if let image = image {
-                Image(nsImage: image)
-                    .interpolation(.none)  // Keep pixel art crisp
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .scaleEffect(x: facingRight ? 1 : -1, y: 1)
-                    .rotationEffect(.radians(rotation))
-            } else {
-                // Fallback circle if sprites not loaded
-                Circle()
-                    .fill(Color.green.opacity(0.8))
-                    .rotationEffect(.radians(rotation))
+        VStack(spacing: 0) {
+            Spacer(minLength: 0)
+            Group {
+                if let image {
+                    Image(nsImage: image)
+                        .interpolation(.none)  // Keep pixel art crisp
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .scaleEffect(x: facingRight ? 1 : -1, y: 1)
+                        .rotationEffect(.radians(rotation))
+                } else {
+                    // Don't render anything if sprite failed to load - likely a timing issue
+                    Color.clear
+                        .onAppear {
+                            logger.warning("BlobView rendered with nil image - sprite may still be loading")
+                        }
+                }
             }
         }
         .frame(width: size.width, height: size.height)

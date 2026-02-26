@@ -6,14 +6,17 @@ import Foundation
 struct CharacterDefinition: Codable {
     let id: String
     let name: String
-    let frameSize: [Int]  // [width, height]
+    let frameSize: [Int]?  // [width, height], optional if all animations define their own
     let scale: Double
     let defaultFps: Double?
     let animations: [String: AnimationDefinition]
     let states: [String: String]
 
     var frameSizeValue: CGSize {
-        CGSize(width: frameSize[0], height: frameSize[1])
+        guard let frameSize = frameSize, frameSize.count >= 2 else {
+            return .zero  // Animations must provide their own frameSize
+        }
+        return CGSize(width: frameSize[0], height: frameSize[1])
     }
 }
 
@@ -22,14 +25,22 @@ struct AnimationDefinition: Codable {
     let frames: Int
     let origin: [Int]?  // [x, y], defaults to [0, 0]
     let fps: Double?
-    let loop: Bool?
-    let vertical: Bool?  // If true, frames are stacked vertically instead of horizontally
+    let loop: Bool?  // swiftlint:disable:this discouraged_optional_boolean
+    let vertical: Bool?  // swiftlint:disable:this discouraged_optional_boolean
+    let frameSize: [Int]?  // [width, height], overrides character-level frameSize
 
     var originPoint: CGPoint {
         guard let origin = origin, origin.count >= 2 else {
             return .zero
         }
         return CGPoint(x: origin[0], y: origin[1])
+    }
+
+    func frameSizeValue(fallback: CGSize) -> CGSize {
+        guard let frameSize = frameSize, frameSize.count >= 2 else {
+            return fallback
+        }
+        return CGSize(width: frameSize[0], height: frameSize[1])
     }
 }
 
@@ -70,10 +81,11 @@ final class SpriteCharacter {
             return nil
         }
 
-        let filePath = (basePath as NSString).appendingPathComponent(animDef.file)
+        let filePath = URL(fileURLWithPath: basePath).appendingPathComponent(animDef.file).path
+        let frameSize = animDef.frameSizeValue(fallback: definition.frameSizeValue)
         guard let animation = SpriteAnimation(
             filePath: filePath,
-            frameSize: definition.frameSizeValue,
+            frameSize: frameSize,
             frameCount: animDef.frames,
             origin: animDef.originPoint,
             fps: animDef.fps ?? definition.defaultFps ?? 10,
@@ -169,21 +181,33 @@ final class CharacterManager {
     static let shared = CharacterManager()
 
     private static let selectedPackKey = "SelectedCharacterPack"
+    private static let mappingSeedKey = "CharacterMappingSeed"
 
     private var characters: [String: SpriteCharacter] = [:]
     private var config: SpritesConfig?
     private var characterOrder: [String] = []
     private(set) var availablePacks: [CharacterPack] = []
     private(set) var selectedPackId: String?
+    private(set) var mappingSeed: UInt64
+
+    /// Callback when mappings are randomized (for UI refresh)
+    var onMappingsRandomized: (() -> Void)?
 
     private init() {
+        // Load or generate mapping seed
+        if let savedSeed = UserDefaults.standard.object(forKey: Self.mappingSeedKey) as? UInt64 {
+            self.mappingSeed = savedSeed
+        } else {
+            self.mappingSeed = UInt64.random(in: 0...UInt64.max)
+            UserDefaults.standard.set(mappingSeed, forKey: Self.mappingSeedKey)
+        }
         scanAvailablePacks()
         loadSelectedPack()
     }
 
     static var charactersDirectory: String {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        return (home as NSString).appendingPathComponent(".agentsprites/characters")
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".agentsprites/characters").path
     }
 
     /// Scan for all available character packs
@@ -196,7 +220,7 @@ final class CharacterManager {
         }
 
         for item in contents {
-            let itemPath = (basePath as NSString).appendingPathComponent(item)
+            let itemPath = URL(fileURLWithPath: basePath).appendingPathComponent(item).path
 
             var isDirectory: ObjCBool = false
             guard FileManager.default.fileExists(atPath: itemPath, isDirectory: &isDirectory),
@@ -205,7 +229,7 @@ final class CharacterManager {
             }
 
             // Check for character.json (single character pack)
-            let singleJsonPath = (itemPath as NSString).appendingPathComponent("character.json")
+            let singleJsonPath = URL(fileURLWithPath: itemPath).appendingPathComponent("character.json").path
             if FileManager.default.fileExists(atPath: singleJsonPath) {
                 // Read to get display name
                 if let data = FileManager.default.contents(atPath: singleJsonPath),
@@ -267,10 +291,10 @@ final class CharacterManager {
     }
 
     private func loadCharactersFromPack(_ packId: String) {
-        let packPath = (Self.charactersDirectory as NSString).appendingPathComponent(packId)
+        let packPath = URL(fileURLWithPath: Self.charactersDirectory).appendingPathComponent(packId).path
 
         // Check for single character pack
-        let singleJsonPath = (packPath as NSString).appendingPathComponent("character.json")
+        let singleJsonPath = URL(fileURLWithPath: packPath).appendingPathComponent("character.json").path
         if let data = FileManager.default.contents(atPath: singleJsonPath),
            let definition = try? JSONDecoder().decode(CharacterDefinition.self, from: data) {
             let character = SpriteCharacter(definition: definition, basePath: packPath)
@@ -288,7 +312,7 @@ final class CharacterManager {
 
         var loadedCharIds: [String] = []
         for subItem in subContents where subItem.hasSuffix(".json") {
-            let jsonPath = (packPath as NSString).appendingPathComponent(subItem)
+            let jsonPath = URL(fileURLWithPath: packPath).appendingPathComponent(subItem).path
             if let data = FileManager.default.contents(atPath: jsonPath),
                let definition = try? JSONDecoder().decode(CharacterDefinition.self, from: data) {
                 let character = SpriteCharacter(definition: definition, basePath: packPath)
@@ -313,8 +337,8 @@ final class CharacterManager {
     func character(forPath path: String) -> SpriteCharacter? {
         guard !characterOrder.isEmpty else { return nil }
 
-        // Use djb2 hash for deterministic selection
-        var hash: UInt64 = 5381
+        // Use djb2 hash with seed for deterministic but randomizable selection
+        var hash: UInt64 = 5381 ^ mappingSeed
         for char in path.utf8 {
             hash = ((hash << 5) &+ hash) &+ UInt64(char)
         }
@@ -322,6 +346,13 @@ final class CharacterManager {
         let index = Int(hash % UInt64(characterOrder.count))
         let charId = characterOrder[index]
         return characters[charId]
+    }
+
+    /// Randomize the folder-to-character/hue mappings
+    func randomizeMappings() {
+        mappingSeed = UInt64.random(in: 0...UInt64.max)
+        UserDefaults.standard.set(mappingSeed, forKey: Self.mappingSeedKey)
+        onMappingsRandomized?()
     }
 
     /// Whether we should use hue rotation for differentiation

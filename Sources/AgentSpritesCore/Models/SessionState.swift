@@ -70,7 +70,8 @@ public struct SessionState: Codable, Sendable, Identifiable, Equatable {
 
     /// Short display name derived from working directory
     public var displayName: String {
-        return (workingDirectory as NSString).lastPathComponent
+        // Use simple string operation instead of URL to avoid filesystem calls
+        (workingDirectory as NSString).lastPathComponent
     }
 }
 

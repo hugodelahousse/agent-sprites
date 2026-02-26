@@ -57,7 +57,21 @@ public struct HookEvent: Codable, Sendable {
 
         // Optional fields
         self.toolName = try container.decodeIfPresent(String.self, forKey: .toolName)
-        self.toolInput = try container.decodeIfPresent(String.self, forKey: .toolInput)
+
+        // tool_input can be either a String or a JSON object - handle both
+        if let inputString = try? container.decodeIfPresent(String.self, forKey: .toolInput) {
+            self.toolInput = inputString
+        } else if let inputObject = try? container.decodeIfPresent(AnyCodable.self, forKey: .toolInput) {
+            // Serialize the object to JSON string
+            if let data = try? JSONEncoder().encode(inputObject),
+               let jsonString = String(data: data, encoding: .utf8) {
+                self.toolInput = jsonString
+            } else {
+                self.toolInput = nil
+            }
+        } else {
+            self.toolInput = nil
+        }
         self.error = try container.decodeIfPresent(String.self, forKey: .error)
         self.notificationType = try container.decodeIfPresent(String.self, forKey: .notificationType)
         self.message = try container.decodeIfPresent(String.self, forKey: .message)
@@ -100,12 +114,12 @@ public struct HookEvent: Codable, Sendable {
     }
 
     /// Parse a HookEvent from JSON data (typically from stdin)
-    public static func parse(from data: Data) throws -> HookEvent {
-        return try JSONDecoder().decode(HookEvent.self, from: data)
+    public static func parse(from data: Data) throws -> Self {
+        try JSONDecoder().decode(Self.self, from: data)
     }
 
     /// Parse a HookEvent from a JSON string
-    public static func parse(from jsonString: String) throws -> HookEvent {
+    public static func parse(from jsonString: String) throws -> Self {
         guard let data = jsonString.data(using: .utf8) else {
             throw HookEventError.invalidEncoding
         }
@@ -130,6 +144,9 @@ public struct HookEvent: Codable, Sendable {
         case "SubagentStart", "SubagentStop":
             return .working
         case "PreCompact":
+            return .working
+        case "PostToolUse":
+            // Tool completed successfully - permission was granted (if needed)
             return .working
         default:
             return .working
@@ -170,6 +187,62 @@ public enum HookEventError: Error, LocalizedError {
             return "Invalid UTF-8 encoding in hook event data"
         case .parseError(let message):
             return "Failed to parse hook event: \(message)"
+        }
+    }
+}
+
+// MARK: - AnyCodable Helper
+
+/// A type-erased Codable value for handling arbitrary JSON
+struct AnyCodable: Codable {
+    let value: Any
+
+    init(_ value: Any) {
+        self.value = value
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+
+        if container.decodeNil() {
+            self.value = NSNull()
+        } else if let bool = try? container.decode(Bool.self) {
+            self.value = bool
+        } else if let int = try? container.decode(Int.self) {
+            self.value = int
+        } else if let double = try? container.decode(Double.self) {
+            self.value = double
+        } else if let string = try? container.decode(String.self) {
+            self.value = string
+        } else if let array = try? container.decode([AnyCodable].self) {
+            self.value = array.map { $0.value }
+        } else if let dict = try? container.decode([String: AnyCodable].self) {
+            self.value = dict.mapValues { $0.value }
+        } else {
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Unable to decode value")
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+
+        switch value {
+        case is NSNull:
+            try container.encodeNil()
+        case let bool as Bool:
+            try container.encode(bool)
+        case let int as Int:
+            try container.encode(int)
+        case let double as Double:
+            try container.encode(double)
+        case let string as String:
+            try container.encode(string)
+        case let array as [Any]:
+            try container.encode(array.map { AnyCodable($0) })
+        case let dict as [String: Any]:
+            try container.encode(dict.mapValues { AnyCodable($0) })
+        default:
+            throw EncodingError.invalidValue(value, EncodingError.Context(codingPath: [], debugDescription: "Unable to encode value"))
         }
     }
 }

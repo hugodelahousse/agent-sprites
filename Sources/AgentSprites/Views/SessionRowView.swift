@@ -7,8 +7,11 @@ struct SessionRowView: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            // Status indicator
-            StatusIndicator(status: session.status)
+            // Animated character indicator
+            SessionCharacterIndicator(
+                workingDirectory: session.workingDirectory,
+                status: session.status
+            )
 
             // Session info
             VStack(alignment: .leading, spacing: 2) {
@@ -105,66 +108,92 @@ struct SessionRowView: View {
     }
 }
 
-struct StatusIndicator: View {
+/// Animated character indicator for session rows
+struct SessionCharacterIndicator: View {
+    let workingDirectory: String
     let status: SessionStatus
 
+    @State private var currentFrame: Int = 0
+
+    private var character: SpriteCharacter? {
+        if CharacterManager.shared.usesRandomCharacter {
+            return CharacterManager.shared.character(forPath: workingDirectory)
+        } else {
+            return CharacterManager.shared.character(forIndex: 0)
+        }
+    }
+
+    private var hueRotation: Double {
+        guard CharacterManager.shared.usesHueRotation else { return 0 }
+        // Same hash algorithm as BlobCoordinator
+        var hash: UInt64 = 5381 ^ CharacterManager.shared.mappingSeed
+        for char in workingDirectory.utf8 {
+            hash = ((hash << 5) &+ hash) &+ UInt64(char)
+        }
+        return Double(hash % 360)
+    }
+
+    private var animationState: String {
+        switch status {
+        case .idle:
+            return "idle"
+        case .working:
+            return "working"
+        case .waitingForInput:
+            return "waitingForInput"
+        case .waitingForPermission:
+            return "waitingForPermission"
+        case .error:
+            return "error"
+        case .done:
+            return "done"
+        }
+    }
+
     var body: some View {
-        ZStack {
-            Circle()
-                .fill(backgroundColor)
-                .frame(width: 32, height: 32)
+        Group {
+            if let character,
+               let animation = character.animation(for: animationState),
+               let image = animation.frame(at: currentFrame) {
+                Image(nsImage: image)
+                    .interpolation(.none)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 32, height: 32)
+                    .hueRotation(.degrees(hueRotation))
+            } else {
+                // Fallback to colored circle if no character
+                Circle()
+                    .fill(statusColor.opacity(0.2))
+                    .frame(width: 32, height: 32)
+            }
+        }
+        .onChange(of: status) { _ in
+            currentFrame = 0
+        }
+        .task(id: "\(animationState)-\(workingDirectory)") {
+            guard let character else { return }
+            let animation = character.animation(for: animationState)
+            let fps = animation?.fps ?? 10
+            let frameCount = animation?.frameCount ?? 1
+            let interval = 1.0 / fps
 
-            Image(systemName: iconName)
-                .font(.system(size: 14))
-                .foregroundColor(foregroundColor)
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                currentFrame = (currentFrame + 1) % frameCount
+            }
         }
     }
 
-    private var iconName: String {
-        switch status {
-        case .idle:
-            return "moon.zzz"
-        case .working:
-            return "keyboard"
-        case .waitingForInput:
-            return "questionmark.bubble"
-        case .waitingForPermission:
-            return "lock"
-        case .error:
-            return "exclamationmark.triangle"
-        case .done:
-            return "checkmark"
-        }
-    }
-
-    private var backgroundColor: Color {
-        switch status {
-        case .idle:
-            return Color.gray.opacity(0.2)
-        case .working:
-            return Color.blue.opacity(0.2)
-        case .waitingForInput:
-            return Color.yellow.opacity(0.2)
-        case .waitingForPermission:
-            return Color.red.opacity(0.2)
-        case .error:
-            return Color.red.opacity(0.2)
-        case .done:
-            return Color.green.opacity(0.2)
-        }
-    }
-
-    private var foregroundColor: Color {
+    private var statusColor: Color {
         switch status {
         case .idle:
             return .gray
         case .working:
             return .blue
         case .waitingForInput:
-            return .orange
-        case .waitingForPermission:
-            return .red
-        case .error:
+            return .yellow
+        case .waitingForPermission, .error:
             return .red
         case .done:
             return .green

@@ -1,5 +1,8 @@
 import Foundation
 import AgentSpritesCore
+import os.log
+
+private let logger = Logger(subsystem: "com.agentsprites.daemon", category: "main")
 
 // Create session manager
 let sessionManager = SessionManager()
@@ -13,7 +16,7 @@ listener.delegate = delegate
 listener.resume()
 
 // Log startup
-NSLog("AgentSprites daemon started, listening on \(AgentSpritesConstants.xpcServiceName)")
+logger.info("Daemon started, listening on \(AgentSpritesConstants.xpcServiceName, privacy: .public)")
 
 // Run the main run loop
 RunLoop.main.run()

@@ -1,4 +1,4 @@
-.PHONY: build release run install restart restart-daemon restart-app clean setup-characters
+.PHONY: build release run install restart restart-daemon restart-app clean setup-characters lint format
 
 # Directories
 INSTALL_DIR := $(HOME)/.agentsprites
@@ -69,3 +69,16 @@ restart-app: build
 
 clean:
 	swift package clean
+
+# Linting and formatting
+lint:
+	swift package --allow-writing-to-package-directory swiftlint
+
+lint-fix:
+	swift package --allow-writing-to-package-directory swiftlint --fix
+
+format:
+	swift package --allow-writing-to-package-directory swiftformat
+
+format-check:
+	swift package --allow-writing-to-package-directory swiftformat --dryrun

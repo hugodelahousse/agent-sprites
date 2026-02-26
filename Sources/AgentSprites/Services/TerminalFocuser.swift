@@ -4,7 +4,7 @@ import os.log
 
 /// Service for focusing terminal windows based on session information
 actor TerminalFocuser {
-    private let logger = Logger(subsystem: "com.agentsprites", category: "TerminalFocuser")
+    private let logger = Logger(subsystem: "com.agentsprites.app", category: "TerminalFocuser")
 
     /// Focus the terminal session associated with the given session state
     func focusSession(_ session: SessionState) async {
@@ -56,7 +56,7 @@ actor TerminalFocuser {
         logger.debug("Running AppleScript for TTY: \(tty, privacy: .public)")
 
         await MainActor.run {
-            var error: NSDictionary?
+            var error: NSDictionary?  // swiftlint:disable:this legacy_objc_type
             let appleScript = NSAppleScript(source: script)
             let result = appleScript?.executeAndReturnError(&error)
 

@@ -10,6 +10,27 @@ private func timestamp() -> String {
     return formatter.string(from: now)
 }
 
+/// Returns the screen containing the given point, or main screen as fallback
+private func screenContaining(_ point: CGPoint) -> NSScreen? {
+    // Find the screen that contains this point
+    for screen in NSScreen.screens {
+        if screen.frame.contains(point) {
+            return screen
+        }
+    }
+    // Fallback to main screen
+    return NSScreen.main
+}
+
+/// Returns the combined bounds of all screens
+private func allScreensBounds() -> CGRect {
+    var bounds = CGRect.zero
+    for screen in NSScreen.screens {
+        bounds = bounds.union(screen.frame)
+    }
+    return bounds
+}
+
 /// Coordinates all blob sprites and their animation
 @MainActor
 final class BlobCoordinator: ObservableObject {
@@ -19,16 +40,15 @@ final class BlobCoordinator: ObservableObject {
         didSet {
             UserDefaults.standard.set(isEnabled, forKey: Self.enabledKey)
             if isEnabled {
-                startAnimation()
                 showAllBlobs()
             } else {
-                stopAnimation()
                 hideAllBlobs()
             }
+            updateAnimationState()
         }
     }
 
-    private let logger = Logger(subsystem: "com.agentsprites", category: "BlobCoordinator")
+    private let logger = Logger(subsystem: "com.agentsprites.app", category: "BlobCoordinator")
     private var blobWindows: [String: BlobWindowController] = [:]
     private var blobPhysics: [String: SlimePhysics] = [:]
     private var blobAnimators: [String: SpriteAnimator] = [:]
@@ -44,6 +64,7 @@ final class BlobCoordinator: ObservableObject {
     private var lastFrameTime: CFTimeInterval = 0
     private var sessions: [SessionState] = []
     private var pendingRenderTime: Date?  // Track when session update happened, for timing logs
+    private nonisolated(unsafe) var isProcessingFrame = false  // Skip frames when main thread is busy
 
     private let terminalFocuser = TerminalFocuser()
     private let windowObserver = WindowObserver.shared
@@ -80,11 +101,25 @@ final class BlobCoordinator: ObservableObject {
         _ = CharacterManager.shared
         self.selectedPackId = CharacterManager.shared.selectedPackId ?? ""
 
-        setupDisplayLink()
-
-        if isEnabled {
-            startAnimation()
+        // Set up callback for when mappings are randomized
+        CharacterManager.shared.onMappingsRandomized = { [weak self] in
+            Task { @MainActor in
+                self?.reloadAllBlobs()
+            }
         }
+
+        // Set up callback for debug overlay to get blob bounds
+        ledgeDebugOverlay.getBlobBounds = { [weak self] in
+            self?.getBlobBounds() ?? []
+        }
+
+        setupDisplayLink()
+        // Animation will start when sessions are added (via updateAnimationState)
+    }
+
+    /// Randomize folder-to-character/hue mappings
+    func randomizeMappings() {
+        CharacterManager.shared.randomizeMappings()
     }
 
     /// Reload all blobs with new characters (called when pack changes)
@@ -139,15 +174,33 @@ final class BlobCoordinator: ObservableObject {
             }
         }
 
+        // Start/stop animation based on whether we have blobs
+        updateAnimationState()
+
         pendingRenderTime = Date()  // Track for animation frame timing
         let elapsed = Date().timeIntervalSince(startTime) * 1000
         logger.info("[TIMING] \(timestamp(), privacy: .public) BlobCoordinator.updateSessions complete (+\(String(format: "%.1f", elapsed), privacy: .public)ms)")
     }
 
+    /// Start or stop animation based on whether there are active blobs
+    private func updateAnimationState() {
+        let shouldAnimate = isEnabled && !blobWindows.isEmpty
+        let isAnimating = displayLink.map { CVDisplayLinkIsRunning($0) } ?? false
+
+        if shouldAnimate && !isAnimating {
+            startAnimation()
+        } else if !shouldAnimate && isAnimating {
+            stopAnimation()
+        }
+    }
+
     // MARK: - Private - Blob Management
 
     private func createBlob(for session: SessionState) {
-        guard let screen = NSScreen.main else { return }
+        // Pick a random screen to spawn on
+        let screens = NSScreen.screens
+        guard !screens.isEmpty else { return }
+        let screen = screens.randomElement() ?? screens[0]
         let screenBounds = screen.visibleFrame
 
         let margin: CGFloat = 80
@@ -230,8 +283,8 @@ final class BlobCoordinator: ObservableObject {
     }
 
     private func hueForPath(_ path: String) -> Double {
-        // Use deterministic djb2 hash for consistent color across restarts
-        var hash: UInt64 = 5381
+        // Use deterministic djb2 hash with seed for consistent but randomizable color
+        var hash: UInt64 = 5381 ^ CharacterManager.shared.mappingSeed
         for char in path.utf8 {
             hash = ((hash << 5) &+ hash) &+ UInt64(char)  // hash * 33 + char
         }
@@ -265,6 +318,9 @@ final class BlobCoordinator: ObservableObject {
         autoDismissTimers.removeValue(forKey: id)
 
         logger.debug("Removed blob for session: \(id, privacy: .public)")
+
+        // Stop animation if no more blobs
+        updateAnimationState()
     }
 
     private func showAllBlobs() {
@@ -342,7 +398,7 @@ final class BlobCoordinator: ObservableObject {
             if messageWindows[session.id] == nil {
                 createMessageWindow(for: session)
             } else {
-                messageWindows[session.id]?.update(status: session.status)
+                messageWindows[session.id]?.update(status: session.status, summary: session.summary)
             }
         } else {
             messageWindows[session.id]?.close()
@@ -358,6 +414,7 @@ final class BlobCoordinator: ObservableObject {
         let window = MessageWindowController(
             sessionId: session.id,
             sessionName: session.displayName,
+            summary: session.summary,
             message: message,
             status: session.status,
             blobPosition: physics.position
@@ -375,16 +432,6 @@ final class BlobCoordinator: ObservableObject {
 
         messageWindows[session.id] = window
         window.show()
-
-        // Auto-dismiss waitingForInput after 3 seconds
-        if session.status == .waitingForInput {
-            autoDismissTimers[session.id]?.invalidate()
-            autoDismissTimers[session.id] = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { [weak self] _ in
-                Task { @MainActor in
-                    self?.dismissMessage(for: session.id, status: session.status)
-                }
-            }
-        }
     }
 
     private func dismissMessage(for sessionId: String, status: SessionStatus) {
@@ -406,6 +453,17 @@ final class BlobCoordinator: ObservableObject {
         }
     }
 
+    /// Get bounding boxes for all active blobs (for debug overlay)
+    private func getBlobBounds() -> [BlobBounds] {
+        blobPhysics.map { id, physics in
+            BlobBounds(
+                sessionId: id,
+                position: physics.position,
+                size: CGSize(width: 64, height: 64)
+            )
+        }
+    }
+
     // MARK: - Private - Animation
 
     private func setupDisplayLink() {
@@ -418,7 +476,10 @@ final class BlobCoordinator: ObservableObject {
         let callback: CVDisplayLinkOutputCallback = { _, _, _, _, _, userInfo -> CVReturn in
             let coordinator = Unmanaged<BlobCoordinator>.fromOpaque(userInfo!).takeUnretainedValue()
 
-            Task { @MainActor in
+            // Skip frame if previous frame still processing (reduces CPU when main thread is busy)
+            guard !coordinator.isProcessingFrame else { return kCVReturnSuccess }
+
+            DispatchQueue.main.async {
                 coordinator.animationFrame()
             }
 
@@ -442,8 +503,12 @@ final class BlobCoordinator: ObservableObject {
         logger.debug("Animation stopped")
     }
 
+    // swiftlint:disable:next cyclomatic_complexity
     private func animationFrame() {
         guard isEnabled else { return }
+
+        isProcessingFrame = true
+        defer { isProcessingFrame = false }
 
         // Log time from session update to render
         if let pendingTime = pendingRenderTime {
@@ -456,10 +521,7 @@ final class BlobCoordinator: ObservableObject {
         let deltaTime = lastFrameTime > 0 ? now - lastFrameTime : 1.0 / 60.0
         lastFrameTime = now
 
-        guard let screen = NSScreen.main else { return }
-        let screenBounds = screen.visibleFrame
-
-        // Get current window ledges
+        // Get current window ledges (now multi-screen aware)
         let ledges = windowObserver.getLedges()
 
         // Collect all blob positions for avoidance behavior
@@ -471,11 +533,19 @@ final class BlobCoordinator: ObservableObject {
             let isDragging = blobDragging[id] ?? false
 
             if !isDragging {
+                // Get the screen containing this blob
+                guard let blobScreen = screenContaining(physics.position) else { continue }
+                let screenBounds = blobScreen.visibleFrame
+
                 // Get positions of other blobs (exclude self)
                 let otherPositions = allBlobPositions.filter { $0.key != id }.map { $0.value }
 
+                // Check session status - don't wander when working
+                let session = sessions.first { $0.id == id }
+                let shouldWander = session?.status != .working
+
                 physics.groundY = screenBounds.minY
-                physics.update(deltaTime: CGFloat(deltaTime), screenBounds: screenBounds, ledges: ledges, otherBlobs: otherPositions)
+                physics.update(deltaTime: CGFloat(deltaTime), screenBounds: screenBounds, ledges: ledges, otherBlobs: otherPositions, shouldWander: shouldWander)
                 blobPhysics[id] = physics
             }
         }
@@ -489,14 +559,9 @@ final class BlobCoordinator: ObservableObject {
             let isDragging = blobDragging[id] ?? false
             let hasMessageWindow = messageWindows[id] != nil
 
-            // Get session status
+            // Get session status (session info is updated in updateSessions, not here)
             let session = sessions.first { $0.id == id }
             let status = session?.status ?? .idle
-
-            // Update session info
-            if let session = session {
-                updateBlobInfo(for: session)
-            }
 
             // Update animator - pass isMoving as false when hovered to play idle animation
             let effectivelyMoving = (isHovered || hasMessageWindow) && !isDragging ? false : physics.isMoving
@@ -519,7 +584,7 @@ final class BlobCoordinator: ObservableObject {
             // Update window
             window.update(
                 image: animator.currentImage,
-                facingRight: animator.facingRight,
+                facingRight: animator.facingRight && ,
                 screenPosition: physics.position,
                 hueRotation: hueRotation,
                 surfaceRotation: surfaceRotation

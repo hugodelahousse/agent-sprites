@@ -10,20 +10,23 @@ final class MessageWindowController {
     private let hostingView: NSHostingView<MessageContentView>
     private var contentView: MessageContentView
     private var sessionName: String
+    private var summary: String?
 
     var onFocusTerminal: (() -> Void)?
     var onDismiss: (() -> Void)?
 
     private static let windowSize = NSSize(width: 200, height: 100)
 
-    init(sessionId: String, sessionName: String, message: String, status: SessionStatus, blobPosition: CGPoint) {
+    init(sessionId: String, sessionName: String, summary: String?, message: String, status: SessionStatus, blobPosition: CGPoint) {
         self.sessionId = sessionId
         self.sessionName = sessionName
+        self.summary = summary
 
         let position = Self.calculatePosition(blobPosition: blobPosition)
 
         self.contentView = MessageContentView(
             sessionName: sessionName,
+            summary: summary,
             message: message,
             status: status,
             onFocusTerminal: { },
@@ -40,7 +43,7 @@ final class MessageWindowController {
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
-        panel.level = .floating
+        panel.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.maximumWindow)))
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
         panel.ignoresMouseEvents = false
         panel.isMovableByWindowBackground = false
@@ -59,6 +62,7 @@ final class MessageWindowController {
     private func updateCallbacks() {
         contentView = MessageContentView(
             sessionName: sessionName,
+            summary: summary,
             message: contentView.message,
             status: contentView.status,
             onFocusTerminal: { [weak self] in
@@ -83,10 +87,14 @@ final class MessageWindowController {
         panel.close()
     }
 
-    func update(status: SessionStatus) {
+    func update(status: SessionStatus, summary: String? = nil) {
+        if let summary {
+            self.summary = summary
+        }
         let message = messageFor(status: status)
         contentView = MessageContentView(
             sessionName: sessionName,
+            summary: self.summary,
             message: message,
             status: status,
             onFocusTerminal: { [weak self] in
@@ -105,29 +113,30 @@ final class MessageWindowController {
     }
 
     private static func calculatePosition(blobPosition: CGPoint) -> CGPoint {
-        // Position to the right of blob, bottom-aligned (like tooltip)
+        // Position centered above the blob
         let blobSize: CGFloat = 64
+        let gap: CGFloat = 8
         var position = CGPoint(
-            x: blobPosition.x + blobSize / 2 + 6,
-            y: blobPosition.y  // Bottom-aligned with blob
+            x: blobPosition.x + blobSize / 2 - windowSize.width / 2,  // Centered horizontally
+            y: blobPosition.y + blobSize + gap  // Above the blob
         )
 
-        if let screen = NSScreen.main {
+        // Find the screen containing the blob
+        let screen = NSScreen.screens.first { $0.frame.contains(blobPosition) } ?? NSScreen.main
+
+        if let screen {
             let screenFrame = screen.visibleFrame
 
-            // If doesn't fit on right, try left
-            if position.x + windowSize.width > screenFrame.maxX - 5 {
-                position.x = blobPosition.x - blobSize / 2 - windowSize.width - 6
+            // If doesn't fit above, position below the blob
+            if position.y + windowSize.height > screenFrame.maxY - 5 {
+                position.y = blobPosition.y - windowSize.height - gap
             }
 
             // Keep within horizontal bounds
             position.x = max(screenFrame.minX + 5, min(screenFrame.maxX - windowSize.width - 5, position.x))
 
             // Keep within vertical bounds
-            if position.y + windowSize.height > screenFrame.maxY {
-                position.y = screenFrame.maxY - windowSize.height - 5
-            }
-            position.y = max(screenFrame.minY + 5, position.y)
+            position.y = max(screenFrame.minY + 5, min(screenFrame.maxY - windowSize.height - 5, position.y))
         }
 
         return position
@@ -148,6 +157,7 @@ final class MessageWindowController {
 /// SwiftUI wrapper for the message content
 private struct MessageContentView: View {
     let sessionName: String
+    let summary: String?
     let message: String
     let status: SessionStatus
     let onFocusTerminal: () -> Void
@@ -156,6 +166,7 @@ private struct MessageContentView: View {
     var body: some View {
         RetroTerminalView(
             sessionName: sessionName,
+            summary: summary,
             message: message,
             status: status,
             onFocusTerminal: onFocusTerminal,

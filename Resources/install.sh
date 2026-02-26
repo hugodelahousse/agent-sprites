@@ -86,6 +86,7 @@ hook_events = [
     "Notification",
     "PermissionRequest",
     "SubagentStart",
+    "PostToolUse",
     "PostToolUseFailure",
     "PreCompact"
 ]
@@ -149,6 +150,7 @@ hook_events = [
     "Notification",
     "PermissionRequest",
     "SubagentStart",
+    "PostToolUse",
     "PostToolUseFailure",
     "PreCompact"
 ]

@@ -32,19 +32,30 @@ struct MenuBarView: View {
             .padding(.horizontal, 12)
 
             // Character settings button
-            Button(action: { SettingsWindowController.shared.show(blobCoordinator: blobCoordinator) }) {
-                HStack {
-                    Label("Character Settings", systemImage: "person.crop.rectangle.stack")
-                    Spacer()
-                    if let pack = blobCoordinator.availablePacks.first(where: { $0.id == blobCoordinator.selectedPackId }) {
-                        Text(pack.name)
+            Button(
+                action: { SettingsWindowController.shared.show(blobCoordinator: blobCoordinator) },
+                label: {
+                    HStack {
+                        Label("Character Settings", systemImage: "person.crop.rectangle.stack")
+                        Spacer()
+                        if let pack = blobCoordinator.availablePacks.first(where: { $0.id == blobCoordinator.selectedPackId }) {
+                            Text(pack.name)
+                                .foregroundColor(.secondary)
+                        }
+                        Image(systemName: "chevron.right")
+                            .font(.caption)
                             .foregroundColor(.secondary)
                     }
-                    Image(systemName: "chevron.right")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
                 }
-            }
+            )
+            .buttonStyle(.plain)
+            .padding(.horizontal, 12)
+
+            // Randomize mappings button
+            Button(
+                action: { blobCoordinator.randomizeMappings() },
+                label: { Label("Randomize Colors", systemImage: "dice") }
+            )
             .buttonStyle(.plain)
             .padding(.horizontal, 12)
 
@@ -80,16 +91,18 @@ struct MenuBarView: View {
 
             // Footer with actions
             HStack {
-                Button(action: { viewModel.fetchSessions() }) {
-                    Label("Refresh", systemImage: "arrow.clockwise")
-                }
+                Button(
+                    action: { viewModel.fetchSessions() },
+                    label: { Label("Refresh", systemImage: "arrow.clockwise") }
+                )
                 .buttonStyle(.borderless)
 
                 Spacer()
 
-                Button(action: { NSApplication.shared.terminate(nil) }) {
-                    Label("Quit", systemImage: "xmark.circle")
-                }
+                Button(
+                    action: { NSApplication.shared.terminate(nil) },
+                    label: { Label("Quit", systemImage: "xmark.circle") }
+                )
                 .buttonStyle(.borderless)
             }
             .padding(.horizontal, 12)

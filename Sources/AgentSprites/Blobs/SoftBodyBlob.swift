@@ -29,8 +29,8 @@ struct SlimePhysics: Sendable {
     private static let velocityHistoryCount = 5
 
     // Wander behavior
-    private var targetPosition: CGFloat  // X for horizontal surfaces, Y for walls
-    private var lastTargetChange: Date = Date()
+    private var targetPosition: CGFloat
+    private var lastTargetChange = Date()
 
     // Physics constants
     private static let gravity: CGFloat = -800
@@ -149,24 +149,27 @@ struct SlimePhysics: Sendable {
     private static let blobDetectionRange: CGFloat = 20
     private static let blobAvoidanceChance: CGFloat = 0.7  // 70% chance to turn when blob detected ahead
 
-    mutating func update(deltaTime: CGFloat, screenBounds: CGRect, ledges: [WindowObserver.Ledge], otherBlobs: [CGPoint] = []) {
+    mutating func update(deltaTime: CGFloat, screenBounds: CGRect, ledges: [WindowObserver.Ledge], otherBlobs: [CGPoint] = [], shouldWander: Bool = true) {
         guard !isDragging else { return }
 
         // Check if another blob is ahead and maybe change direction
-        checkForBlobsAhead(otherBlobs: otherBlobs, screenBounds: screenBounds, ledges: ledges)
+        if shouldWander {
+            checkForBlobsAhead(otherBlobs: otherBlobs, screenBounds: screenBounds, ledges: ledges)
+        }
 
         switch currentSurface {
         case .falling:
             updateFalling(deltaTime: deltaTime, screenBounds: screenBounds, ledges: ledges)
         case .floor, .ledge:
-            updateHorizontalSurface(deltaTime: deltaTime, screenBounds: screenBounds, ledges: ledges)
+            updateHorizontalSurface(deltaTime: deltaTime, screenBounds: screenBounds, ledges: ledges, shouldWander: shouldWander)
         case .leftWall, .rightWall:
-            updateWallClimbing(deltaTime: deltaTime, screenBounds: screenBounds, ledges: ledges)
+            updateWallClimbing(deltaTime: deltaTime, screenBounds: screenBounds, ledges: ledges, shouldWander: shouldWander)
         case .ceiling:
-            updateCeiling(deltaTime: deltaTime, screenBounds: screenBounds, ledges: ledges)
+            updateCeiling(deltaTime: deltaTime, screenBounds: screenBounds, ledges: ledges, shouldWander: shouldWander)
         }
     }
 
+    // swiftlint:disable:next cyclomatic_complexity
     private mutating func checkForBlobsAhead(otherBlobs: [CGPoint], screenBounds: CGRect, ledges: [WindowObserver.Ledge]) {
         guard !otherBlobs.isEmpty else { return }
 
@@ -281,12 +284,10 @@ struct SlimePhysics: Sendable {
 
         // Check for landing on ledges
         if velocity.y < 0 {
-            for ledge in ledges {
-                if ledge.contains(x: position.x) {
-                    if position.y <= ledge.y && position.y > ledge.y - 30 {
-                        landOnLedge(ledge: ledge)
-                        return
-                    }
+            for ledge in ledges where ledge.contains(x: position.x) {
+                if position.y <= ledge.y && position.y > ledge.y - 30 {
+                    landOnLedge(ledge: ledge)
+                    return
                 }
             }
 
@@ -314,9 +315,13 @@ struct SlimePhysics: Sendable {
         currentLedgeMaxX = ledge.maxX
     }
 
-    private mutating func updateHorizontalSurface(deltaTime: CGFloat, screenBounds: CGRect, ledges: [WindowObserver.Ledge]) {
-        // Wander behavior
-        updateWander(deltaTime: deltaTime, screenBounds: screenBounds, ledges: ledges)
+    private mutating func updateHorizontalSurface(deltaTime: CGFloat, screenBounds: CGRect, ledges: [WindowObserver.Ledge], shouldWander: Bool) {
+        // Wander behavior (only when enabled)
+        if shouldWander {
+            updateWander(deltaTime: deltaTime, screenBounds: screenBounds, ledges: ledges)
+        } else {
+            velocity.x = 0
+        }
 
         // Update position
         position.x += velocity.x * deltaTime
@@ -377,11 +382,15 @@ struct SlimePhysics: Sendable {
         lastTargetChange = Date()
     }
 
-    private mutating func updateWallClimbing(deltaTime: CGFloat, screenBounds: CGRect, ledges: [WindowObserver.Ledge]) {
+    private mutating func updateWallClimbing(deltaTime: CGFloat, screenBounds: CGRect, ledges: [WindowObserver.Ledge], shouldWander: Bool) {
         let isLeftWall = currentSurface == .leftWall
 
-        // Wander vertically on wall
-        updateWallWander(deltaTime: deltaTime, screenBounds: screenBounds)
+        // Wander vertically on wall (only when enabled)
+        if shouldWander {
+            updateWallWander(deltaTime: deltaTime, screenBounds: screenBounds)
+        } else {
+            velocity.y = 0
+        }
 
         // Update position
         position.y += velocity.y * deltaTime
@@ -416,9 +425,13 @@ struct SlimePhysics: Sendable {
         lastTargetChange = Date()
     }
 
-    private mutating func updateCeiling(deltaTime: CGFloat, screenBounds: CGRect, ledges: [WindowObserver.Ledge]) {
-        // Wander horizontally on ceiling
-        updateCeilingWander(deltaTime: deltaTime, screenBounds: screenBounds)
+    private mutating func updateCeiling(deltaTime: CGFloat, screenBounds: CGRect, ledges: [WindowObserver.Ledge], shouldWander: Bool) {
+        // Wander horizontally on ceiling (only when enabled)
+        if shouldWander {
+            updateCeilingWander(deltaTime: deltaTime, screenBounds: screenBounds)
+        } else {
+            velocity.x = 0
+        }
 
         // Update position
         position.x += velocity.x * deltaTime

@@ -42,7 +42,7 @@ final class SessionStateTests: XCTestCase {
             ("Notification", .waitingForInput),
             ("PermissionRequest", .waitingForPermission),
             ("PostToolUseFailure", .error),
-            ("SubagentStart", .working),
+            ("SubagentStart", .working)
         ]
 
         for (eventName, expectedStatus) in testCases {
@@ -152,5 +152,84 @@ final class SessionStateTests: XCTestCase {
         """
         let event = try HookEvent.parse(from: json)
         XCTAssertEqual(event.hookEventName, "Official")
+    }
+
+    // MARK: - Notification Type Status Determination Tests
+    //
+    // Claude Code sends different notification_type values that map to different statuses.
+    // This is critical for showing the correct UI state (color, animation) to the user.
+
+    func testNotificationElicitationDialogMapsToWaitingForInput() throws {
+        let event = HookEvent(
+            hookEventName: "Notification",
+            sessionId: "test",
+            cwd: "/tmp",
+            notificationType: "elicitation_dialog"
+        )
+        XCTAssertEqual(event.determineStatus(), .waitingForInput)
+    }
+
+    func testNotificationPermissionPromptMapsToWaitingForPermission() throws {
+        let event = HookEvent(
+            hookEventName: "Notification",
+            sessionId: "test",
+            cwd: "/tmp",
+            notificationType: "permission_prompt"
+        )
+        XCTAssertEqual(event.determineStatus(), .waitingForPermission)
+    }
+
+    func testNotificationIdlePromptMapsToIdle() throws {
+        let event = HookEvent(
+            hookEventName: "Notification",
+            sessionId: "test",
+            cwd: "/tmp",
+            notificationType: "idle_prompt"
+        )
+        XCTAssertEqual(event.determineStatus(), .idle)
+    }
+
+    func testNotificationAuthSuccessMapsToWorking() throws {
+        let event = HookEvent(
+            hookEventName: "Notification",
+            sessionId: "test",
+            cwd: "/tmp",
+            notificationType: "auth_success"
+        )
+        XCTAssertEqual(event.determineStatus(), .working)
+    }
+
+    func testNotificationUnknownTypeDefaultsToWaitingForInput() throws {
+        let event = HookEvent(
+            hookEventName: "Notification",
+            sessionId: "test",
+            cwd: "/tmp",
+            notificationType: "some_unknown_type"
+        )
+        XCTAssertEqual(event.determineStatus(), .waitingForInput)
+    }
+
+    func testNotificationWithoutTypeMapsToWaitingForInput() throws {
+        let event = HookEvent(
+            hookEventName: "Notification",
+            sessionId: "test",
+            cwd: "/tmp",
+            notificationType: nil
+        )
+        XCTAssertEqual(event.determineStatus(), .waitingForInput)
+    }
+
+    func testNotificationTypePassedThroughParsing() throws {
+        let json = """
+        {
+            "hook_event_name": "Notification",
+            "session_id": "test-123",
+            "cwd": "/tmp",
+            "notification_type": "permission_prompt"
+        }
+        """
+        let event = try HookEvent.parse(from: json)
+        XCTAssertEqual(event.notificationType, "permission_prompt")
+        XCTAssertEqual(event.determineStatus(), .waitingForPermission)
     }
 }

@@ -134,7 +134,7 @@ func extractFromTranscript(transcriptPath: String) -> (summary: String?, gitBran
     return (summary, gitBranch)
 }
 
-/// Look up session metadata from sessions-index.json, falling back to transcript parsing
+/// Look up session metadata, preferring the transcript for the latest summary
 /// - Parameter transcriptPath: Path to the transcript file (e.g., ~/.claude/projects/.../session-id.jsonl)
 /// - Parameter sessionId: The session ID to look up
 /// - Returns: Tuple of (summary, gitBranch) if found
@@ -144,32 +144,37 @@ func lookupSessionMetadata(transcriptPath: String?, sessionId: String) -> (summa
         return (nil, nil)
     }
 
-    // The sessions-index.json is in the same directory as the transcript
+    // Always parse transcript first - it has the most recent summary for active sessions
+    let (transcriptSummary, transcriptBranch) = extractFromTranscript(transcriptPath: transcriptPath)
+
+    // If transcript has a summary, use it (latest is always preferred)
+    if transcriptSummary != nil {
+        logger.debug("Using transcript summary: \(transcriptSummary ?? "nil", privacy: .public)")
+        return (transcriptSummary, transcriptBranch)
+    }
+
+    // Fallback to sessions-index.json if transcript has no summary
     let transcriptURL = URL(fileURLWithPath: transcriptPath)
     let projectDir = transcriptURL.deletingLastPathComponent()
     let indexPath = projectDir.appendingPathComponent("sessions-index.json")
 
-    logger.debug("Looking for sessions-index.json at: \(indexPath.path, privacy: .public)")
+    logger.debug("No transcript summary, checking sessions-index.json at: \(indexPath.path, privacy: .public)")
 
     if let indexData = FileManager.default.contents(atPath: indexPath.path) {
-        logger.debug("Found sessions-index.json, size: \(indexData.count) bytes")
-
         do {
             let index = try JSONDecoder().decode(SessionsIndex.self, from: indexData)
-            logger.debug("Decoded \(index.entries.count) entries, looking for sessionId: \(sessionId, privacy: .public)")
             if let entry = index.entries.first(where: { $0.sessionId == sessionId }) {
-                logger.debug("Found entry with summary: \(entry.summary ?? "nil", privacy: .public), gitBranch: \(entry.gitBranch ?? "nil", privacy: .public)")
-                return (entry.summary, entry.gitBranch)
-            } else {
-                logger.debug("Session not in index, falling back to transcript parsing")
+                logger.debug("Found index entry with summary: \(entry.summary ?? "nil", privacy: .public)")
+                // Use index summary, but prefer transcript's gitBranch if available
+                return (entry.summary, transcriptBranch ?? entry.gitBranch)
             }
         } catch {
             logger.error("Failed to decode sessions-index.json: \(error, privacy: .public)")
         }
     }
 
-    // Fallback: parse transcript file directly for active sessions
-    return extractFromTranscript(transcriptPath: transcriptPath)
+    // Return whatever we got from the transcript (may have gitBranch even without summary)
+    return (nil, transcriptBranch)
 }
 
 // MARK: - TTY and BundleID Resolution
@@ -299,26 +304,11 @@ func resolveParentBundleId() -> String? {
 // MARK: - XPC Helper
 
 /// Send session update to daemon, returns success
-func sendUpdate(
-    daemon: AgentSpritesDaemonProtocol,
-    hookEvent: HookEvent,
-    tty: String?,
-    bundleId: String?,
-    summary: String?,
-    gitBranch: String?
-) -> Bool {
+func sendUpdate(daemon: AgentSpritesDaemonProtocol, request: SessionUpdateRequest) -> Bool {
     let semaphore = DispatchSemaphore(value: 0)
     var success = false
 
-    daemon.updateSession(
-        sessionId: hookEvent.sessionId,
-        eventName: hookEvent.hookEventName,
-        workingDirectory: hookEvent.cwd,
-        tty: tty,
-        bundleId: bundleId,
-        summary: summary,
-        gitBranch: gitBranch
-    ) { result in
+    daemon.updateSession(request) { result in
         success = result
         semaphore.signal()
     }
@@ -330,6 +320,26 @@ func sendUpdate(
     }
 
     return success
+}
+
+/// Create a session update request from hook event and metadata
+func createRequest(
+    from hookEvent: HookEvent,
+    tty: String? = nil,
+    bundleId: String? = nil,
+    summary: String? = nil,
+    gitBranch: String? = nil
+) -> SessionUpdateRequest {
+    SessionUpdateRequest(
+        sessionId: hookEvent.sessionId,
+        eventName: hookEvent.hookEventName,
+        workingDirectory: hookEvent.cwd,
+        tty: tty,
+        bundleId: bundleId,
+        summary: summary,
+        gitBranch: gitBranch,
+        notificationType: hookEvent.notificationType
+    )
 }
 
 // MARK: - Background Mode
@@ -372,14 +382,14 @@ func runBackgroundUpdate(hookEventJSON: String) {
 
     logger.info("Background: sending metadata update")
 
-    _ = sendUpdate(
-        daemon: daemon,
-        hookEvent: hookEvent,
+    let request = createRequest(
+        from: hookEvent,
         tty: tty,
         bundleId: bundleId,
         summary: summary,
         gitBranch: gitBranch
     )
+    _ = sendUpdate(daemon: daemon, request: request)
 
     connection.invalidate()
 }
@@ -497,14 +507,8 @@ logger.info("[TIMING] \(timestamp(), privacy: .public) Cache check done, hit=\(c
 let sendStartTime = Date()
 logger.info("[TIMING] \(timestamp(), privacy: .public) Sending XPC update: session=\(hookEvent.sessionId.prefix(8), privacy: .public), event=\(hookEvent.hookEventName, privacy: .public)")
 
-_ = sendUpdate(
-    daemon: daemon,
-    hookEvent: hookEvent,
-    tty: cachedEntry?.tty,
-    bundleId: cachedEntry?.bundleId,
-    summary: nil,
-    gitBranch: nil
-)
+let initialRequest = createRequest(from: hookEvent, tty: cachedEntry?.tty, bundleId: cachedEntry?.bundleId)
+_ = sendUpdate(daemon: daemon, request: initialRequest)
 
 let sendEndTime = Date()
 logger.info("[TIMING] \(timestamp(), privacy: .public) XPC update complete (+\(String(format: "%.1f", sendEndTime.timeIntervalSince(sendStartTime) * 1000), privacy: .public)ms)")
@@ -513,7 +517,9 @@ connection.invalidate()
 
 // Spawn background process for slow lookups (metadata, process tree if not cached)
 // This lets the main process exit immediately so Claude Code isn't blocked
-if let hookEventJSON = String(data: inputData, encoding: .utf8) {
+// Skip background spawn for SessionEnd - it doesn't need metadata and could race with removal
+if hookEvent.hookEventName != "SessionEnd",
+   let hookEventJSON = String(data: inputData, encoding: .utf8) {
     spawnBackgroundUpdate(hookEventJSON: hookEventJSON, executablePath: args[0])
 }
 

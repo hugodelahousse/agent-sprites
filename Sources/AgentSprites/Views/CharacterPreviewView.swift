@@ -9,7 +9,6 @@ struct CharacterPreviewView: View {
     let size: CGFloat
 
     @State private var currentFrame: Int = 0
-    @State private var timer: Timer?
 
     var body: some View {
         Group {
@@ -27,41 +26,23 @@ struct CharacterPreviewView: View {
                     .frame(width: size, height: size)
             }
         }
-        .onAppear {
-            startAnimation()
-        }
-        .onDisappear {
-            stopAnimation()
-        }
         .onChange(of: state) { _ in
             currentFrame = 0
-            restartAnimation()
         }
         .onChange(of: character.id) { _ in
             currentFrame = 0
-            restartAnimation()
         }
-    }
-
-    private func startAnimation() {
-        let animation = character.animation(for: state)
-        let fps = animation?.fps ?? 10
-        let interval = 1.0 / fps
-
-        timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { _ in
+        .task(id: "\(state)-\(character.id)") {
+            let animation = character.animation(for: state)
+            let fps = animation?.fps ?? 10
             let frameCount = animation?.frameCount ?? 1
-            currentFrame = (currentFrame + 1) % frameCount
+            let interval = 1.0 / fps
+
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                currentFrame = (currentFrame + 1) % frameCount
+            }
         }
-    }
-
-    private func stopAnimation() {
-        timer?.invalidate()
-        timer = nil
-    }
-
-    private func restartAnimation() {
-        stopAnimation()
-        startAnimation()
     }
 }
 

@@ -3,7 +3,6 @@ import SwiftUI
 /// Shared retro terminal frame component
 struct TerminalFrame<Content: View>: View {
     let content: Content
-    @State private var scanlineOffset: CGFloat = 0
 
     init(@ViewBuilder content: () -> Content) {
         self.content = content()
@@ -15,8 +14,8 @@ struct TerminalFrame<Content: View>: View {
             RoundedRectangle(cornerRadius: 8)
                 .fill(BlobColors.terminalBackground)
 
-            // Scanline overlay
-            ScanlineOverlay(offset: scanlineOffset)
+            // Static scanline overlay (no animation to save CPU)
+            ScanlineOverlay(offset: 0)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
                 .opacity(0.15)
 
@@ -33,18 +32,6 @@ struct TerminalFrame<Content: View>: View {
                 .padding(2)
         }
         .shadow(color: BlobColors.terminalGreen.opacity(0.2), radius: 8)
-        .onAppear {
-            startScanlineAnimation()
-        }
-    }
-
-    private func startScanlineAnimation() {
-        Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { _ in
-            scanlineOffset += 1
-            if scanlineOffset > 4 {
-                scanlineOffset = 0
-            }
-        }
     }
 }
 

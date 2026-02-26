@@ -27,17 +27,9 @@ final class XPCHandler: NSObject, AgentSpritesDaemonProtocol {
         super.init()
     }
 
-    func updateSession(sessionId: String, eventName: String, workingDirectory: String, tty: String?, bundleId: String?, summary: String?, gitBranch: String?, reply: @escaping (Bool) -> Void) {
+    func updateSession(_ request: SessionUpdateRequest, reply: @escaping (Bool) -> Void) {
         Task {
-            let success = await sessionManager.updateSession(
-                sessionId: sessionId,
-                eventName: eventName,
-                workingDirectory: workingDirectory,
-                tty: tty,
-                bundleId: bundleId,
-                summary: summary,
-                gitBranch: gitBranch
-            )
+            let success = await sessionManager.updateSession(request)
             reply(success)
         }
     }

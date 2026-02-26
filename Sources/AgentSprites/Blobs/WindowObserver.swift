@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+import QuartzCore
 
 /// Observes window positions on screen to provide ledges for blobs to walk on
 @MainActor
@@ -36,7 +37,7 @@ final class WindowObserver {
         let minY: CGFloat  // Bottom in Cocoa coords
         let maxY: CGFloat  // Top in Cocoa coords
 
-        func coversTopEdge(of other: WindowRect, tolerance: CGFloat = 5) -> Bool {
+        func coversTopEdge(of other: Self, tolerance: CGFloat = 5) -> Bool {
             // Check if this window covers the top edge of another window
             // The other window's top edge is at other.maxY
             // This window covers it if this window's vertical range includes that Y
@@ -77,29 +78,30 @@ final class WindowObserver {
 
     private var cachedLedges: [Ledge] = []
     private var cachedWindowFrames: [WindowFrame] = []
-    private var lastUpdate: Date = .distantPast
-    private let updateInterval: TimeInterval = 0.5  // Update every 500ms
+    private var lastUpdateTime: CFTimeInterval = 0
+    private let updateInterval: CFTimeInterval = 0.5  // Update every 500ms
 
     /// Get all ledges (window tops) sorted by Y position (highest first)
     func getLedges() -> [Ledge] {
-        let now = Date()
-        if now.timeIntervalSince(lastUpdate) > updateInterval {
+        let now = CACurrentMediaTime()
+        if now - lastUpdateTime > updateInterval {
             updateLedges()
-            lastUpdate = now
+            lastUpdateTime = now
         }
         return cachedLedges
     }
 
     /// Get all window frames for debug visualization
     func getWindowFrames() -> [WindowFrame] {
-        let now = Date()
-        if now.timeIntervalSince(lastUpdate) > updateInterval {
+        let now = CACurrentMediaTime()
+        if now - lastUpdateTime > updateInterval {
             updateLedges()
-            lastUpdate = now
+            lastUpdateTime = now
         }
         return cachedWindowFrames
     }
 
+    // swiftlint:disable:next cyclomatic_complexity
     private func updateLedges() {
         guard let windowList = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
             cachedLedges = []
@@ -109,11 +111,13 @@ final class WindowObserver {
         // Get our own process ID to exclude our windows
         let ourPid = ProcessInfo.processInfo.processIdentifier
 
-        guard let screen = NSScreen.main else {
+        // Use the primary screen height for CGWindow coordinate conversion
+        // CGWindow bounds always use primary screen as origin reference
+        guard let primaryScreen = NSScreen.screens.first else {
             cachedLedges = []
             return
         }
-        let screenHeight = screen.frame.height
+        let screenHeight = primaryScreen.frame.height
 
         // Collect valid windows with their rects (in front-to-back order)
         var windowRects: [(rect: WindowRect, windowId: CGWindowID)] = []
@@ -122,7 +126,7 @@ final class WindowObserver {
         for windowInfo in windowList {
             guard let boundsDict = windowInfo[kCGWindowBounds as String] as? [String: CGFloat],
                   let windowId = windowInfo[kCGWindowNumber as String] as? CGWindowID,
-                  windowInfo[kCGWindowOwnerName as String] as? String != nil else {
+                  windowInfo[kCGWindowOwnerName as String] is String else {
                 continue
             }
 
@@ -304,13 +308,10 @@ final class WindowObserver {
     func findCurrentLedge(position: CGPoint, tolerance: CGFloat = 5) -> Ledge? {
         let ledges = getLedges()
 
-        for ledge in ledges {
-            // Check if blob is at this ledge's Y level
-            if abs(position.y - ledge.y) < tolerance {
-                // Check if horizontally within ledge
-                if ledge.contains(x: position.x) {
-                    return ledge
-                }
+        for ledge in ledges where abs(position.y - ledge.y) < tolerance {
+            // Check if horizontally within ledge
+            if ledge.contains(x: position.x) {
+                return ledge
             }
         }
 

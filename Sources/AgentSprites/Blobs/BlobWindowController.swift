@@ -2,14 +2,40 @@ import AppKit
 import SwiftUI
 import AgentSpritesCore
 
+/// Observable model for blob state - allows efficient SwiftUI updates
+@MainActor
+final class BlobViewModel: ObservableObject {
+    @Published var image: NSImage?
+    @Published var facingRight: Bool = true
+    @Published var hueRotation: Double = 0
+    @Published var surfaceRotation: Double = 0
+
+    func update(image: NSImage?, facingRight: Bool, hueRotation: Double, surfaceRotation: Double) {
+        // Only update properties that changed to minimize SwiftUI invalidation
+        if self.image !== image {
+            self.image = image
+        }
+        if self.facingRight != facingRight {
+            self.facingRight = facingRight
+        }
+        if self.hueRotation != hueRotation {
+            self.hueRotation = hueRotation
+        }
+        if self.surfaceRotation != surfaceRotation {
+            self.surfaceRotation = surfaceRotation
+        }
+    }
+}
+
 /// Manages an NSPanel window for a single blob sprite
 @MainActor
 final class BlobWindowController {
     let sessionId: String
     private let panel: NSPanel
+    private let viewModel: BlobViewModel
     private let hostingView: NSHostingView<BlobContentView>
-    private var contentView: BlobContentView
     private var tooltipWindow: NSPanel?
+    private var lastPosition: CGPoint = .zero
 
     private static let windowSize = CGSize(width: 64, height: 64)
 
@@ -18,27 +44,20 @@ final class BlobWindowController {
     var onDragStart: (() -> Void)?
     var onDragUpdate: ((CGPoint) -> Void)?  // Screen position
     var onDragEnd: (() -> Void)?
-    var sessionInfo: SessionInfo = SessionInfo()
+    var sessionInfo = SessionInfo()
     var hasMessageWindow: Bool = false  // Prevents tooltip when message is showing
 
     struct SessionInfo {
         var name: String = ""
         var status: String = ""
         var directory: String = ""
-        var summary: String? = nil
-        var gitBranch: String? = nil
+        var summary: String?
+        var gitBranch: String?
     }
 
     init(sessionId: String) {
         self.sessionId = sessionId
-
-        self.contentView = BlobContentView(
-            image: nil,
-            facingRight: true,
-            size: Self.windowSize,
-            hueRotation: 0,
-            surfaceRotation: 0
-        )
+        self.viewModel = BlobViewModel()
 
         let panel = NSPanel(
             contentRect: NSRect(origin: .zero, size: Self.windowSize),
@@ -57,6 +76,7 @@ final class BlobWindowController {
         panel.hidesOnDeactivate = false
 
         self.panel = panel
+        let contentView = BlobContentView(viewModel: viewModel, size: Self.windowSize)
         self.hostingView = NSHostingView(rootView: contentView)
         hostingView.frame = panel.contentView?.bounds ?? .zero
 
@@ -104,24 +124,24 @@ final class BlobWindowController {
     }
 
     func update(image: NSImage?, facingRight: Bool, screenPosition: CGPoint, hueRotation: Double, surfaceRotation: Double = 0) {
-        contentView = BlobContentView(
-            image: image,
-            facingRight: facingRight,
-            size: Self.windowSize,
-            hueRotation: hueRotation,
-            surfaceRotation: surfaceRotation
-        )
-        hostingView.rootView = contentView
+        // Update view model - only changed properties trigger SwiftUI updates
+        viewModel.update(image: image, facingRight: facingRight, hueRotation: hueRotation, surfaceRotation: surfaceRotation)
 
-        let windowOrigin = CGPoint(
-            x: screenPosition.x - Self.windowSize.width / 2,
-            y: screenPosition.y
-        )
-        panel.setFrameOrigin(windowOrigin)
+        // Only update window position if it changed by at least 0.5 pixels (avoid expensive window operations for sub-pixel movement)
+        let dx = abs(lastPosition.x - screenPosition.x)
+        let dy = abs(lastPosition.y - screenPosition.y)
+        if dx >= 0.5 || dy >= 0.5 {
+            lastPosition = screenPosition
+            let windowOrigin = CGPoint(
+                x: screenPosition.x - Self.windowSize.width / 2,
+                y: screenPosition.y
+            )
+            panel.setFrameOrigin(windowOrigin)
 
-        // Update tooltip position if visible
-        if let tooltip = tooltipWindow, tooltip.isVisible {
-            positionTooltip()
+            // Update tooltip position if visible
+            if let tooltip = tooltipWindow, tooltip.isVisible {
+                positionTooltip()
+            }
         }
     }
 
@@ -173,30 +193,32 @@ final class BlobWindowController {
         let fittingSize = hostingView.fittingSize
         tooltip.setContentSize(fittingSize)
 
-        // Position to the right of blob, bottom-aligned
+        // Position centered above the blob
         let blobFrame = panel.frame
+        let gap: CGFloat = 8
         var tooltipOrigin = CGPoint(
-            x: blobFrame.maxX + 6,
-            y: blobFrame.minY  // Bottom-aligned with blob
+            x: blobFrame.midX - fittingSize.width / 2,  // Centered horizontally
+            y: blobFrame.maxY + gap  // Above the blob
         )
 
+        // Find the screen containing the blob (use center of blob frame)
+        let blobCenter = CGPoint(x: blobFrame.midX, y: blobFrame.midY)
+        let screen = NSScreen.screens.first { $0.frame.contains(blobCenter) } ?? NSScreen.main
+
         // Keep on screen
-        if let screen = NSScreen.main {
+        if let screen {
             let screenFrame = screen.visibleFrame
 
-            // If doesn't fit on right, try left
-            if tooltipOrigin.x + fittingSize.width > screenFrame.maxX - 5 {
-                tooltipOrigin.x = blobFrame.minX - fittingSize.width - 6
+            // If doesn't fit above, position below the blob
+            if tooltipOrigin.y + fittingSize.height > screenFrame.maxY - 5 {
+                tooltipOrigin.y = blobFrame.minY - fittingSize.height - gap
             }
 
             // Keep within horizontal bounds
             tooltipOrigin.x = max(screenFrame.minX + 5, min(screenFrame.maxX - fittingSize.width - 5, tooltipOrigin.x))
 
             // Keep within vertical bounds
-            if tooltipOrigin.y + fittingSize.height > screenFrame.maxY {
-                tooltipOrigin.y = screenFrame.maxY - fittingSize.height - 5
-            }
-            tooltipOrigin.y = max(screenFrame.minY + 5, tooltipOrigin.y)
+            tooltipOrigin.y = max(screenFrame.minY + 5, min(screenFrame.maxY - fittingSize.height - 5, tooltipOrigin.y))
         }
 
         tooltip.setFrameOrigin(tooltipOrigin)
@@ -244,17 +266,14 @@ private struct TooltipView: View {
     }
 }
 
-/// SwiftUI wrapper view for the blob
+/// SwiftUI wrapper view for the blob - observes view model for efficient updates
 private struct BlobContentView: View {
-    let image: NSImage?
-    let facingRight: Bool
+    @ObservedObject var viewModel: BlobViewModel
     let size: CGSize
-    let hueRotation: Double
-    let surfaceRotation: Double  // Radians for wall/ceiling rotation
 
     var body: some View {
-        BlobView(image: image, facingRight: facingRight, size: size, rotation: surfaceRotation)
-            .hueRotation(Angle(degrees: hueRotation))
+        BlobView(image: viewModel.image, facingRight: viewModel.facingRight, size: size, rotation: viewModel.surfaceRotation)
+            .hueRotation(Angle(degrees: viewModel.hueRotation))
     }
 }
 

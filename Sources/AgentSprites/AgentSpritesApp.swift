@@ -37,7 +37,7 @@ final class SessionViewModel: ObservableObject {
     private var connection: NSXPCConnection?
     private var notificationObserver: NSObjectProtocol?
     private let terminalFocuser = TerminalFocuser()
-    private let logger = Logger(subsystem: "com.agentsprites", category: "SessionViewModel")
+    private let logger = Logger(subsystem: "com.agentsprites.app", category: "SessionViewModel")
 
     var menuBarIcon: String {
         if !isConnected {
