@@ -28,6 +28,53 @@ public struct HookEvent: Codable, Sendable {
         case notificationType = "notification_type"
         case message
         case transcriptPath = "transcript_path"
+
+        // Alternative keys for hookEventName (defensive, may not be needed)
+        case eventName = "event_name"
+        case camelCaseEventName = "hookEventName"
+        case shortEventName = "event"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+
+        // Required fields
+        self.sessionId = try container.decode(String.self, forKey: .sessionId)
+        self.cwd = try container.decode(String.self, forKey: .cwd)
+
+        // Try multiple keys for event name (official key first)
+        if let name = try container.decodeIfPresent(String.self, forKey: .hookEventName) {
+            self.hookEventName = name
+        } else if let name = try container.decodeIfPresent(String.self, forKey: .eventName) {
+            self.hookEventName = name
+        } else if let name = try container.decodeIfPresent(String.self, forKey: .camelCaseEventName) {
+            self.hookEventName = name
+        } else if let name = try container.decodeIfPresent(String.self, forKey: .shortEventName) {
+            self.hookEventName = name
+        } else {
+            self.hookEventName = "Unknown"
+        }
+
+        // Optional fields
+        self.toolName = try container.decodeIfPresent(String.self, forKey: .toolName)
+        self.toolInput = try container.decodeIfPresent(String.self, forKey: .toolInput)
+        self.error = try container.decodeIfPresent(String.self, forKey: .error)
+        self.notificationType = try container.decodeIfPresent(String.self, forKey: .notificationType)
+        self.message = try container.decodeIfPresent(String.self, forKey: .message)
+        self.transcriptPath = try container.decodeIfPresent(String.self, forKey: .transcriptPath)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(hookEventName, forKey: .hookEventName)
+        try container.encode(sessionId, forKey: .sessionId)
+        try container.encode(cwd, forKey: .cwd)
+        try container.encodeIfPresent(toolName, forKey: .toolName)
+        try container.encodeIfPresent(toolInput, forKey: .toolInput)
+        try container.encodeIfPresent(error, forKey: .error)
+        try container.encodeIfPresent(notificationType, forKey: .notificationType)
+        try container.encodeIfPresent(message, forKey: .message)
+        try container.encodeIfPresent(transcriptPath, forKey: .transcriptPath)
     }
 
     public init(
@@ -54,8 +101,7 @@ public struct HookEvent: Codable, Sendable {
 
     /// Parse a HookEvent from JSON data (typically from stdin)
     public static func parse(from data: Data) throws -> HookEvent {
-        let decoder = JSONDecoder()
-        return try decoder.decode(HookEvent.self, from: data)
+        return try JSONDecoder().decode(HookEvent.self, from: data)
     }
 
     /// Parse a HookEvent from a JSON string

@@ -38,7 +38,10 @@ let package = Package(
         .executableTarget(
             name: "AgentSprites",
             dependencies: ["AgentSpritesCore"],
-            path: "Sources/AgentSprites"
+            path: "Sources/AgentSprites",
+            resources: [
+                .process("Resources")
+            ]
         ),
 
         // Tests

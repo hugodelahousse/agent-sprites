@@ -20,6 +20,15 @@ final class WindowObserver {
         }
     }
 
+    /// Represents a full window frame for debug visualization
+    struct WindowFrame: Sendable {
+        let minX: CGFloat
+        let maxX: CGFloat
+        let minY: CGFloat  // Bottom in Cocoa coords
+        let maxY: CGFloat  // Top in Cocoa coords
+        let name: String
+    }
+
     /// Represents a window rectangle for occlusion testing
     private struct WindowRect {
         let minX: CGFloat
@@ -67,6 +76,7 @@ final class WindowObserver {
     }
 
     private var cachedLedges: [Ledge] = []
+    private var cachedWindowFrames: [WindowFrame] = []
     private var lastUpdate: Date = .distantPast
     private let updateInterval: TimeInterval = 0.5  // Update every 500ms
 
@@ -78,6 +88,16 @@ final class WindowObserver {
             lastUpdate = now
         }
         return cachedLedges
+    }
+
+    /// Get all window frames for debug visualization
+    func getWindowFrames() -> [WindowFrame] {
+        let now = Date()
+        if now.timeIntervalSince(lastUpdate) > updateInterval {
+            updateLedges()
+            lastUpdate = now
+        }
+        return cachedWindowFrames
     }
 
     private func updateLedges() {
@@ -97,6 +117,7 @@ final class WindowObserver {
 
         // Collect valid windows with their rects (in front-to-back order)
         var windowRects: [(rect: WindowRect, windowId: CGWindowID)] = []
+        var windowFrames: [WindowFrame] = []
 
         for windowInfo in windowList {
             guard let boundsDict = windowInfo[kCGWindowBounds as String] as? [String: CGFloat],
@@ -157,6 +178,16 @@ final class WindowObserver {
             )
 
             windowRects.append((rect, windowId))
+
+            // Store window frame for debug visualization
+            let displayName = windowName.isEmpty ? ownerName : "\(ownerName): \(windowName)"
+            windowFrames.append(WindowFrame(
+                minX: x,
+                maxX: x + width,
+                minY: windowBottom,
+                maxY: windowTop,
+                name: displayName
+            ))
         }
 
         // Now process windows and create ledges, accounting for occlusion
@@ -205,6 +236,7 @@ final class WindowObserver {
 
         // Sort by Y position (highest first) so we check top ledges first
         cachedLedges = ledges.sorted { $0.y > $1.y }
+        cachedWindowFrames = windowFrames
     }
 
     /// Subtract a blocking horizontal range from a segment, considering Y overlap

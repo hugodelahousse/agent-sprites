@@ -43,3 +43,10 @@ build/
 
 # Claude Code local settings
 .claude/settings.local.json
+
+# Scripts (one-off asset processing)
+scripts/
+
+# Character packs (keep only slime)
+CharacterPacks/*
+!CharacterPacks/slime/

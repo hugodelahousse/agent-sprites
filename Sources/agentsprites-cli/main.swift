@@ -7,6 +7,46 @@ import os
 
 private let logger = Logger(subsystem: "com.agentsprites.cli", category: "main")
 
+// MARK: - Process Tree Cache
+
+/// Cache entry for TTY/BundleId lookup results
+struct ProcessTreeCacheEntry: Codable {
+    let tty: String?
+    let bundleId: String?
+    let timestamp: Date
+}
+
+/// File-based cache for TTY/BundleId lookups (survives CLI restarts)
+enum ProcessTreeCache {
+    private static let cacheDir = FileManager.default.temporaryDirectory.appendingPathComponent("agentsprites-cache")
+    private static let maxAge: TimeInterval = 3600 // 1 hour
+
+    static func get(sessionId: String) -> ProcessTreeCacheEntry? {
+        let path = cacheDir.appendingPathComponent("\(sessionId).json")
+        guard let data = try? Data(contentsOf: path),
+              let entry = try? JSONDecoder().decode(ProcessTreeCacheEntry.self, from: data) else {
+            return nil
+        }
+
+        // Check if cache entry is still valid
+        if Date().timeIntervalSince(entry.timestamp) > maxAge {
+            try? FileManager.default.removeItem(at: path)
+            return nil
+        }
+
+        return entry
+    }
+
+    static func set(sessionId: String, tty: String?, bundleId: String?) {
+        try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
+        let entry = ProcessTreeCacheEntry(tty: tty, bundleId: bundleId, timestamp: Date())
+        let path = cacheDir.appendingPathComponent("\(sessionId).json")
+        if let data = try? JSONEncoder().encode(entry) {
+            try? data.write(to: path)
+        }
+    }
+}
+
 // MARK: - Session Metadata
 
 /// Session entry from sessions-index.json
@@ -22,32 +62,32 @@ struct SessionsIndex: Codable {
     let entries: [SessionIndexEntry]
 }
 
-/// Transcript user message structure
-struct TranscriptUserMessage: Codable {
+/// Transcript entry structure for parsing various entry types
+struct TranscriptEntry: Codable {
     let type: String
     let message: MessageContent?
     let gitBranch: String?
+    let summary: String?  // Present when type == "summary"
 
     struct MessageContent: Codable {
         let content: String
     }
 }
 
-/// Extract first user message from transcript file as fallback summary
+/// Extract session metadata from transcript file
+/// Prioritizes the latest "summary" entry, falls back to first user message
 /// - Parameter transcriptPath: Path to the transcript .jsonl file
-/// - Returns: Tuple of (firstPrompt truncated, gitBranch) if found
+/// - Returns: Tuple of (summary, gitBranch) if found
 func extractFromTranscript(transcriptPath: String) -> (summary: String?, gitBranch: String?) {
-    guard let fileHandle = FileHandle(forReadingAtPath: transcriptPath) else {
-        logger.debug("Could not open transcript file")
+    guard let data = FileManager.default.contents(atPath: transcriptPath),
+          let content = String(data: data, encoding: .utf8) else {
+        logger.debug("Could not read transcript file")
         return (nil, nil)
     }
-    defer { try? fileHandle.close() }
 
-    // Read first 32KB to find the first user message (should be near the start)
-    let data = fileHandle.readData(ofLength: 32 * 1024)
-    guard let content = String(data: data, encoding: .utf8) else {
-        return (nil, nil)
-    }
+    var latestSummary: String?
+    var firstUserMessage: String?
+    var gitBranch: String?
 
     // Parse line by line (JSONL format)
     for line in content.components(separatedBy: .newlines) {
@@ -55,26 +95,43 @@ func extractFromTranscript(transcriptPath: String) -> (summary: String?, gitBran
               let lineData = line.data(using: .utf8) else { continue }
 
         do {
-            let entry = try JSONDecoder().decode(TranscriptUserMessage.self, from: lineData)
-            if entry.type == "user", let messageContent = entry.message?.content {
-                // Truncate long prompts to make a reasonable summary
-                let maxLength = 80
-                var summary = messageContent
-                    .replacingOccurrences(of: "\n", with: " ")
-                    .trimmingCharacters(in: .whitespaces)
-                if summary.count > maxLength {
-                    summary = String(summary.prefix(maxLength)) + "…"
+            let entry = try JSONDecoder().decode(TranscriptEntry.self, from: lineData)
+
+            // Capture gitBranch from any entry that has it
+            if gitBranch == nil, let branch = entry.gitBranch {
+                gitBranch = branch
+            }
+
+            // Look for summary entries (these are Claude-generated session titles)
+            if entry.type == "summary", let summary = entry.summary {
+                latestSummary = summary
+                logger.debug("Found summary entry: \(summary, privacy: .public)")
+            }
+
+            // Capture first user message as fallback
+            if firstUserMessage == nil,
+               entry.type == "user",
+               let messageContent = entry.message?.content {
+                // Skip messages that look like system-injected content
+                let trimmed = messageContent.trimmingCharacters(in: .whitespaces)
+                if !trimmed.hasPrefix("<") {
+                    let maxLength = 80
+                    var msg = trimmed.replacingOccurrences(of: "\n", with: " ")
+                    if msg.count > maxLength {
+                        msg = String(msg.prefix(maxLength)) + "…"
+                    }
+                    firstUserMessage = msg
                 }
-                logger.debug("Extracted from transcript: summary=\(summary, privacy: .public), gitBranch=\(entry.gitBranch ?? "nil", privacy: .public)")
-                return (summary, entry.gitBranch)
             }
         } catch {
-            // Not a user message or different format, continue
             continue
         }
     }
 
-    return (nil, nil)
+    // Prefer the Claude-generated summary, fall back to first user message
+    let summary = latestSummary ?? firstUserMessage
+    logger.debug("Extracted from transcript: summary=\(summary ?? "nil", privacy: .public), gitBranch=\(gitBranch ?? "nil", privacy: .public)")
+    return (summary, gitBranch)
 }
 
 /// Look up session metadata from sessions-index.json, falling back to transcript parsing
@@ -239,12 +296,151 @@ func resolveParentBundleId() -> String? {
     return nil
 }
 
+// MARK: - XPC Helper
+
+/// Send session update to daemon, returns success
+func sendUpdate(
+    daemon: AgentSpritesDaemonProtocol,
+    hookEvent: HookEvent,
+    tty: String?,
+    bundleId: String?,
+    summary: String?,
+    gitBranch: String?
+) -> Bool {
+    let semaphore = DispatchSemaphore(value: 0)
+    var success = false
+
+    daemon.updateSession(
+        sessionId: hookEvent.sessionId,
+        eventName: hookEvent.hookEventName,
+        workingDirectory: hookEvent.cwd,
+        tty: tty,
+        bundleId: bundleId,
+        summary: summary,
+        gitBranch: gitBranch
+    ) { result in
+        success = result
+        semaphore.signal()
+    }
+
+    let timeout = DispatchTime.now() + .milliseconds(500)
+    if semaphore.wait(timeout: timeout) == .timedOut {
+        logger.warning("XPC call timed out")
+        return false
+    }
+
+    return success
+}
+
+// MARK: - Background Mode
+
+/// Run slow lookups and send follow-up update (called in background subprocess)
+func runBackgroundUpdate(hookEventJSON: String) {
+    guard let jsonData = hookEventJSON.data(using: .utf8),
+          let hookEvent = try? HookEvent.parse(from: jsonData) else {
+        logger.error("Background: Failed to parse hook event")
+        return
+    }
+
+    // Connect to daemon
+    let connection = NSXPCConnection(machServiceName: AgentSpritesConstants.xpcServiceName, options: [])
+    connection.remoteObjectInterface = createDaemonInterface()
+    connection.resume()
+
+    guard let daemon = connection.remoteObjectProxyWithErrorHandler({ _ in }) as? AgentSpritesDaemonProtocol else {
+        connection.invalidate()
+        return
+    }
+
+    // Check if we need to resolve process tree
+    let cachedEntry = ProcessTreeCache.get(sessionId: hookEvent.sessionId)
+    var tty = cachedEntry?.tty
+    var bundleId = cachedEntry?.bundleId
+
+    if cachedEntry == nil {
+        // Resolve TTY and bundle ID (slow - involves spawning ps processes)
+        tty = resolveSessionTTY()
+        bundleId = resolveParentBundleId()
+        ProcessTreeCache.set(sessionId: hookEvent.sessionId, tty: tty, bundleId: bundleId)
+    }
+
+    // Look up session metadata
+    let (summary, gitBranch) = lookupSessionMetadata(
+        transcriptPath: hookEvent.transcriptPath,
+        sessionId: hookEvent.sessionId
+    )
+
+    logger.info("Background: sending metadata update")
+
+    _ = sendUpdate(
+        daemon: daemon,
+        hookEvent: hookEvent,
+        tty: tty,
+        bundleId: bundleId,
+        summary: summary,
+        gitBranch: gitBranch
+    )
+
+    connection.invalidate()
+}
+
+/// Spawn background process to do slow lookups
+func spawnBackgroundUpdate(hookEventJSON: String, executablePath: String) {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: executablePath)
+    process.arguments = ["--background", hookEventJSON]
+
+    // Detach from parent - don't wait for completion
+    process.standardOutput = FileHandle.nullDevice
+    process.standardError = FileHandle.nullDevice
+
+    do {
+        try process.run()
+        // Don't wait - let it run in background
+    } catch {
+        logger.warning("Failed to spawn background process: \(error.localizedDescription, privacy: .public)")
+    }
+}
+
+// MARK: - Timing Helpers
+
+func timestamp() -> String {
+    let now = Date()
+    let formatter = DateFormatter()
+    formatter.dateFormat = "HH:mm:ss.SSS"
+    return formatter.string(from: now)
+}
+
 // MARK: - Main
+
+let args = CommandLine.arguments
+let cliStartTime = Date()
+
+// Check for background mode (called by ourselves for slow lookups)
+if args.count >= 3 && args[1] == "--background" {
+    logger.info("[TIMING] \(timestamp(), privacy: .public) Background process started")
+    runBackgroundUpdate(hookEventJSON: args[2])
+    exit(0)
+}
+
+logger.info("[TIMING] \(timestamp(), privacy: .public) CLI started")
+
+// Post immediate notification directly to app (bypasses daemon for faster visual feedback)
+DistributedNotificationCenter.default().postNotificationName(
+    Notification.Name("com.agentsprites.hookStarted"),
+    object: nil,
+    userInfo: nil,
+    deliverImmediately: true
+)
+logger.info("[TIMING] \(timestamp(), privacy: .public) Posted hookStarted notification")
 
 // Read JSON from stdin
 let inputData = FileHandle.standardInput.readDataToEndOfFile()
+let stdinReadTime = Date()
+logger.info("[TIMING] \(timestamp(), privacy: .public) stdin read complete (+\(String(format: "%.1f", stdinReadTime.timeIntervalSince(cliStartTime) * 1000), privacy: .public)ms)")
 
 guard !inputData.isEmpty else {
+    logger.error("[TIMING] \(timestamp(), privacy: .public) Error: empty stdin")
     fputs("Error: No input received on stdin\n", stderr)
     exit(1)
 }
@@ -254,23 +450,32 @@ let hookEvent: HookEvent
 do {
     hookEvent = try HookEvent.parse(from: inputData)
 } catch {
+    let rawString = String(data: inputData, encoding: .utf8) ?? "(non-utf8 data)"
+    let preview = String(rawString.prefix(500))
+    logger.error("[TIMING] \(timestamp(), privacy: .public) Error parsing JSON: \(error.localizedDescription, privacy: .public) - data preview: \(preview, privacy: .public)")
     fputs("Error parsing hook event: \(error.localizedDescription)\n", stderr)
     exit(1)
 }
+
+let parseTime = Date()
+logger.info("[TIMING] \(timestamp(), privacy: .public) JSON parsed (+\(String(format: "%.1f", parseTime.timeIntervalSince(stdinReadTime) * 1000), privacy: .public)ms)")
 
 // Connect to daemon via XPC
 let connection = NSXPCConnection(machServiceName: AgentSpritesConstants.xpcServiceName, options: [])
 connection.remoteObjectInterface = createDaemonInterface()
 
 connection.interruptionHandler = {
-    fputs("XPC connection interrupted\n", stderr)
+    logger.warning("XPC connection interrupted")
 }
 
 connection.invalidationHandler = {
-    fputs("XPC connection invalidated\n", stderr)
+    logger.debug("XPC connection invalidated")
 }
 
 connection.resume()
+
+let xpcConnectTime = Date()
+logger.info("[TIMING] \(timestamp(), privacy: .public) XPC connection resumed (+\(String(format: "%.1f", xpcConnectTime.timeIntervalSince(parseTime) * 1000), privacy: .public)ms)")
 
 // Get proxy to daemon
 let daemon = connection.remoteObjectProxyWithErrorHandler { error in
@@ -283,48 +488,36 @@ guard let daemon = daemon else {
     exit(1)
 }
 
-// Resolve TTY and bundle ID for terminal focusing
-let tty = resolveSessionTTY()
-let bundleId = resolveParentBundleId()
+// Check cache for TTY/bundleId (fast path)
+let cachedEntry = ProcessTreeCache.get(sessionId: hookEvent.sessionId)
+let cacheCheckTime = Date()
+logger.info("[TIMING] \(timestamp(), privacy: .public) Cache check done, hit=\(cachedEntry != nil, privacy: .public) (+\(String(format: "%.1f", cacheCheckTime.timeIntervalSince(xpcConnectTime) * 1000), privacy: .public)ms)")
 
-// Look up session metadata from sessions-index.json
-let (summary, gitBranch) = lookupSessionMetadata(
-    transcriptPath: hookEvent.transcriptPath,
-    sessionId: hookEvent.sessionId
+// Send initial update immediately with cached values (or nil if not cached)
+let sendStartTime = Date()
+logger.info("[TIMING] \(timestamp(), privacy: .public) Sending XPC update: session=\(hookEvent.sessionId.prefix(8), privacy: .public), event=\(hookEvent.hookEventName, privacy: .public)")
+
+_ = sendUpdate(
+    daemon: daemon,
+    hookEvent: hookEvent,
+    tty: cachedEntry?.tty,
+    bundleId: cachedEntry?.bundleId,
+    summary: nil,
+    gitBranch: nil
 )
 
-logger.info("Sending to daemon: session=\(hookEvent.sessionId, privacy: .public), event=\(hookEvent.hookEventName, privacy: .public), summary=\(summary ?? "nil", privacy: .public), gitBranch=\(gitBranch ?? "nil", privacy: .public)")
-
-// Use a semaphore to wait for async XPC call
-let semaphore = DispatchSemaphore(value: 0)
-var success = false
-
-// Send update to daemon
-daemon.updateSession(
-    sessionId: hookEvent.sessionId,
-    eventName: hookEvent.hookEventName,
-    workingDirectory: hookEvent.cwd,
-    tty: tty,
-    bundleId: bundleId,
-    summary: summary,
-    gitBranch: gitBranch
-) { result in
-    success = result
-    semaphore.signal()
-}
-
-// Wait for response with timeout
-let timeout = DispatchTime.now() + .seconds(4)
-if semaphore.wait(timeout: timeout) == .timedOut {
-    fputs("Error: XPC call timed out\n", stderr)
-    connection.invalidate()
-    exit(1)
-}
+let sendEndTime = Date()
+logger.info("[TIMING] \(timestamp(), privacy: .public) XPC update complete (+\(String(format: "%.1f", sendEndTime.timeIntervalSince(sendStartTime) * 1000), privacy: .public)ms)")
 
 connection.invalidate()
 
-if !success {
-    fputs("Warning: Daemon returned failure for session update\n", stderr)
+// Spawn background process for slow lookups (metadata, process tree if not cached)
+// This lets the main process exit immediately so Claude Code isn't blocked
+if let hookEventJSON = String(data: inputData, encoding: .utf8) {
+    spawnBackgroundUpdate(hookEventJSON: hookEventJSON, executablePath: args[0])
 }
+
+let totalTime = Date().timeIntervalSince(cliStartTime) * 1000
+logger.info("[TIMING] \(timestamp(), privacy: .public) CLI exiting, total=\(String(format: "%.1f", totalTime), privacy: .public)ms")
 
 exit(0)

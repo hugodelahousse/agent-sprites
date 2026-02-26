@@ -31,6 +31,23 @@ struct MenuBarView: View {
             .toggleStyle(.switch)
             .padding(.horizontal, 12)
 
+            // Character settings button
+            Button(action: { SettingsWindowController.shared.show(blobCoordinator: blobCoordinator) }) {
+                HStack {
+                    Label("Character Settings", systemImage: "person.crop.rectangle.stack")
+                    Spacer()
+                    if let pack = blobCoordinator.availablePacks.first(where: { $0.id == blobCoordinator.selectedPackId }) {
+                        Text(pack.name)
+                            .foregroundColor(.secondary)
+                    }
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 12)
+
             Divider()
 
             // Sessions list

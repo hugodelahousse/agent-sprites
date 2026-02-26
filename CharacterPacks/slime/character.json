@@ -1,0 +1,38 @@
+{
+  "id": "slime",
+  "name": "Slime",
+  "frameSize": [128, 128],
+  "scale": 2.0,
+  "defaultFps": 10,
+  "animations": {
+    "idle": {
+      "file": "slime_idle.png",
+      "frames": 4
+    },
+    "walk": {
+      "file": "slime_walk.png",
+      "frames": 6
+    },
+    "hurt": {
+      "file": "slime_hurt.png",
+      "frames": 4,
+      "loop": false
+    },
+    "attack": {
+      "file": "slime_attack.png",
+      "frames": 5,
+      "fps": 15
+    }
+  },
+  "states": {
+    "idle": "idle",
+    "working": "walk",
+    "moving": "walk",
+    "waitingForInput": "idle",
+    "waitingForPermission": "idle",
+    "error": "hurt",
+    "done": "idle",
+    "dragging": "attack",
+    "falling": "attack"
+  }
+}

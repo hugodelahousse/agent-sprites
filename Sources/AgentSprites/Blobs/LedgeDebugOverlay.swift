@@ -46,8 +46,8 @@ final class LedgeDebugOverlay {
 
         window.isOpaque = false
         window.backgroundColor = .clear
-        window.level = .floating
-        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
+        window.level = .screenSaver  // Above menu bar
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient, .stationary]
         window.ignoresMouseEvents = true
         window.hasShadow = false
 
@@ -73,9 +73,16 @@ final class LedgeDebugOverlay {
         guard let window = window, let screen = NSScreen.main else { return }
 
         let ledges = windowObserver.getLedges()
+        let windowFrames = windowObserver.getWindowFrames()
         let groundY = screen.visibleFrame.minY
 
-        let view = LedgeDebugView(ledges: ledges, groundY: groundY, screenHeight: screen.frame.height)
+        let view = LedgeDebugView(
+            ledges: ledges,
+            windowFrames: windowFrames,
+            groundY: groundY,
+            screenHeight: screen.frame.height,
+            screenBounds: screen.visibleFrame
+        )
         let hostingView = NSHostingView(rootView: view)
         hostingView.frame = window.contentView?.bounds ?? screen.frame
 
@@ -83,14 +90,61 @@ final class LedgeDebugOverlay {
     }
 }
 
-/// SwiftUI view that draws ledge lines
+/// SwiftUI view that draws ledge lines and window frames
 private struct LedgeDebugView: View {
     let ledges: [WindowObserver.Ledge]
+    let windowFrames: [WindowObserver.WindowFrame]
     let groundY: CGFloat
     let screenHeight: CGFloat
+    let screenBounds: CGRect
 
     var body: some View {
         Canvas { context, size in
+            // Draw canvas bounds (screen.visibleFrame - where blobs can exist)
+            // Convert from Cocoa coords (origin bottom-left) to SwiftUI (origin top-left)
+            let canvasLeft = screenBounds.minX
+            let canvasRight = screenBounds.maxX
+            let canvasBottom = screenHeight - screenBounds.minY
+            let canvasTop = screenHeight - screenBounds.maxY
+
+            let canvasRect = CGRect(
+                x: canvasLeft,
+                y: canvasTop,
+                width: canvasRight - canvasLeft,
+                height: canvasBottom - canvasTop
+            )
+            let canvasPath = Path { path in
+                path.addRect(canvasRect)
+            }
+            context.stroke(canvasPath, with: .color(.white.opacity(0.8)), lineWidth: 2)
+
+            // Label the canvas bounds
+            let canvasLabel = Text("BLOB CANVAS").font(.system(size: 10, weight: .bold, design: .monospaced))
+            context.draw(canvasLabel, at: CGPoint(x: canvasLeft + 5, y: canvasTop + 14))
+
+            // Draw window frames (so ledges appear on top)
+            for (index, frame) in windowFrames.enumerated() {
+                // Convert from Cocoa coordinates to SwiftUI
+                let top = size.height - frame.maxY
+                let bottom = size.height - frame.minY
+                let rect = CGRect(x: frame.minX, y: top, width: frame.maxX - frame.minX, height: bottom - top)
+
+                let framePath = Path { path in
+                    path.addRect(rect)
+                }
+
+                // Use different colors for each window
+                let colors: [Color] = [.orange, .purple, .yellow, .teal]
+                let color = colors[index % colors.count]
+                context.stroke(framePath, with: .color(color.opacity(0.5)), lineWidth: 1)
+
+                // Draw window name
+                let nameText = Text(frame.name)
+                    .font(.system(size: 8, design: .monospaced))
+                    .foregroundColor(color)
+                context.draw(nameText, at: CGPoint(x: frame.minX + 4, y: top + 12))
+            }
+
             // Draw ground line
             let groundPath = Path { path in
                 path.move(to: CGPoint(x: 0, y: size.height - groundY))

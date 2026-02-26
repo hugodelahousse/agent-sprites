@@ -36,7 +36,8 @@ final class BlobWindowController {
             image: nil,
             facingRight: true,
             size: Self.windowSize,
-            hueRotation: 0
+            hueRotation: 0,
+            surfaceRotation: 0
         )
 
         let panel = NSPanel(
@@ -49,8 +50,8 @@ final class BlobWindowController {
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = false
-        panel.level = .floating
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
+        panel.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.maximumWindow)))
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient, .stationary]
         panel.ignoresMouseEvents = false
         panel.isMovableByWindowBackground = false
         panel.hidesOnDeactivate = false
@@ -102,12 +103,13 @@ final class BlobWindowController {
         hideTooltip()
     }
 
-    func update(image: NSImage?, facingRight: Bool, screenPosition: CGPoint, hueRotation: Double) {
+    func update(image: NSImage?, facingRight: Bool, screenPosition: CGPoint, hueRotation: Double, surfaceRotation: Double = 0) {
         contentView = BlobContentView(
             image: image,
             facingRight: facingRight,
             size: Self.windowSize,
-            hueRotation: hueRotation
+            hueRotation: hueRotation,
+            surfaceRotation: surfaceRotation
         )
         hostingView.rootView = contentView
 
@@ -248,9 +250,10 @@ private struct BlobContentView: View {
     let facingRight: Bool
     let size: CGSize
     let hueRotation: Double
+    let surfaceRotation: Double  // Radians for wall/ceiling rotation
 
     var body: some View {
-        BlobView(image: image, facingRight: facingRight, size: size)
+        BlobView(image: image, facingRight: facingRight, size: size, rotation: surfaceRotation)
             .hueRotation(Angle(degrees: hueRotation))
     }
 }

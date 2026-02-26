@@ -1,10 +1,16 @@
 # AgentSprites - Swift Development Guide
 
 ## Build & Run
-- Build all: `swift build`
-- Build release: `swift build -c release`
+- Build: `make build` or `swift build`
+- Build release: `make release`
+- Run: `make run`
+- Install (full): `make install` - builds release, installs to ~/.agentsprites, configures Claude hooks
+- Restart (dev): `make restart` - rebuilds debug, installs binaries, restarts daemon + app
+- Restart daemon only: `make restart-daemon`
+- Restart app only: `make restart-app`
+- Setup characters: `make setup-characters` (auto-runs on build)
 - Run tests: `swift test`
-- Clean: `swift package clean`
+- Clean: `make clean`
 
 ## Project Structure
 - `AgentSpritesCore`: Shared library with models and XPC protocol

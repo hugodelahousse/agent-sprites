@@ -2,9 +2,9 @@ import Foundation
 import AppKit
 import AgentSpritesCore
 
-/// Manages animation state and frame timing for a slime sprite
-struct SlimeAnimator {
-    var currentState: SlimeAnimationState = .idle
+/// Manages animation state and frame timing for a character sprite
+struct SpriteAnimator {
+    var currentState: String = "idle"
     var currentFrame: Int = 0
     var frameTime: Double = 0
     var isMoving: Bool = false
@@ -12,49 +12,57 @@ struct SlimeAnimator {
     var isDragging: Bool = false
     var isFalling: Bool = false
 
-    // Frame timing
-    private static let framesPerSecond: Double = 10
-    private static let attackFramesPerSecond: Double = 15  // Faster attack animation
+    let character: SpriteCharacter
 
-    /// Map session status to animation state
-    static func animationState(for status: SessionStatus, isMoving: Bool, isDragging: Bool, isFalling: Bool) -> SlimeAnimationState {
-        // Dragging always shows attack animation
+    init(character: SpriteCharacter) {
+        self.character = character
+    }
+
+    /// Map session status to state name
+    static func stateName(for status: SessionStatus, isMoving: Bool, isDragging: Bool, isFalling: Bool) -> String {
         if isDragging {
-            return .attack
+            return "dragging"
         }
 
-        // Falling shows jump animation
         if isFalling {
-            return .jump
+            return "falling"
+        }
+
+        if isMoving {
+            return "moving"
         }
 
         switch status {
         case .idle:
-            return isMoving ? .walk : .idle
+            return "idle"
         case .working:
-            return isMoving ? .run : .walk
+            return "working"
         case .waitingForInput:
-            return .idle
+            return "waitingForInput"
         case .waitingForPermission:
-            return .jump    // Bouncy attention-getting
+            return "waitingForPermission"
         case .error:
-            return .hurt
+            return "error"
         case .done:
-            return .idle
+            return "done"
         }
     }
 
     /// Update animation, returns true if frame changed
-    mutating func update(deltaTime: Double, status: SessionStatus, isMoving: Bool, velocity: CGFloat, isDragging: Bool = false, isFalling: Bool = false) -> Bool {
+    mutating func update(deltaTime: Double, status: SessionStatus, isMoving: Bool, velocity: CGFloat, isDragging: Bool = false, isFalling: Bool = false, isClimbing: Bool = false, verticalVelocity: CGFloat = 0) -> Bool {
         // Update facing direction based on velocity
-        if abs(velocity) > 1 {
+        if isClimbing {
+            if abs(verticalVelocity) > 1 {
+                facingRight = verticalVelocity > 0
+            }
+        } else if abs(velocity) > 1 {
             facingRight = velocity > 0
         }
 
         self.isMoving = isMoving
         self.isDragging = isDragging
         self.isFalling = isFalling
-        let targetState = Self.animationState(for: status, isMoving: isMoving, isDragging: isDragging, isFalling: isFalling)
+        let targetState = Self.stateName(for: status, isMoving: isMoving, isDragging: isDragging, isFalling: isFalling)
 
         // Handle state transitions
         if targetState != currentState {
@@ -64,17 +72,16 @@ struct SlimeAnimator {
             return true
         }
 
-        // Update frame timing (faster for attack animation)
+        // Update frame timing
         frameTime += deltaTime
-        let fps = currentState == .attack ? Self.attackFramesPerSecond : Self.framesPerSecond
+        let animation = character.animation(for: currentState)
+        let fps = animation?.fps ?? 10
         let frameDuration = 1.0 / fps
 
         if frameTime >= frameDuration {
             frameTime -= frameDuration
 
-            let spriteSheet = SlimeSpriteManager.shared.spriteSheet(for: currentState)
-            let frameCount = spriteSheet?.frameCount ?? 1
-
+            let frameCount = animation?.frameCount ?? 1
             currentFrame = (currentFrame + 1) % frameCount
             return true
         }
@@ -84,7 +91,7 @@ struct SlimeAnimator {
 
     /// Get current frame image
     var currentImage: NSImage? {
-        let spriteSheet = SlimeSpriteManager.shared.spriteSheet(for: currentState)
-        return spriteSheet?.frame(at: currentFrame)
+        let animation = character.animation(for: currentState)
+        return animation?.frame(at: currentFrame)
     }
 }
