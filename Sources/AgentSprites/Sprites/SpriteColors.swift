@@ -1,9 +1,9 @@
 import SwiftUI
 import AgentSpritesCore
 
-/// Color configuration for blob sprites based on session state
-struct BlobColors {
-    /// Returns the primary color for a blob based on session status
+/// Color configuration for sprites based on session state
+struct SpriteColors {
+    /// Returns the primary color for a sprite based on session status
     static func color(for status: SessionStatus) -> Color {
         switch status {
         case .idle:
@@ -31,7 +31,7 @@ struct BlobColors {
         }
     }
 
-    /// Returns the glow/highlight color for a blob
+    /// Returns the glow/highlight color for a sprite
     static func glowColor(for status: SessionStatus) -> Color {
         switch status {
         case .idle:

@@ -3,7 +3,7 @@ import AgentSpritesCore
 
 struct MenuBarView: View {
     @ObservedObject var viewModel: SessionViewModel
-    @ObservedObject var blobCoordinator: BlobCoordinator
+    @ObservedObject var spriteCoordinator: SpriteCoordinator
     @ObservedObject var appState: AppState
 
     var body: some View {
@@ -16,7 +16,7 @@ struct MenuBarView: View {
                 Button(
                     action: {
                         SettingsWindowController.shared.show(
-                            blobCoordinator: blobCoordinator,
+                            spriteCoordinator: spriteCoordinator,
                             appState: appState
                         )
                     },
@@ -39,7 +39,7 @@ struct MenuBarView: View {
             }
 
             // Show sprites toggle
-            Toggle(isOn: $blobCoordinator.isEnabled) {
+            Toggle(isOn: $spriteCoordinator.isEnabled) {
                 Label("Show Sprites", systemImage: "sparkles")
             }
             .toggleStyle(.switch)

@@ -17,12 +17,12 @@ final class MessageWindowController {
 
     private static let windowSize = NSSize(width: 200, height: 100)
 
-    init(sessionId: String, sessionName: String, summary: String?, message: String, status: SessionStatus, blobPosition: CGPoint) {
+    init(sessionId: String, sessionName: String, summary: String?, message: String, status: SessionStatus, spritePosition: CGPoint) {
         self.sessionId = sessionId
         self.sessionName = sessionName
         self.summary = summary
 
-        let position = Self.calculatePosition(blobPosition: blobPosition)
+        let position = Self.calculatePosition(spritePosition: spritePosition)
 
         self.contentView = MessageContentView(
             sessionName: sessionName,
@@ -107,29 +107,29 @@ final class MessageWindowController {
         hostingView.rootView = contentView
     }
 
-    func updatePosition(blobPosition: CGPoint) {
-        let newPosition = Self.calculatePosition(blobPosition: blobPosition)
+    func updatePosition(spritePosition: CGPoint) {
+        let newPosition = Self.calculatePosition(spritePosition: spritePosition)
         panel.setFrameOrigin(newPosition)
     }
 
-    private static func calculatePosition(blobPosition: CGPoint) -> CGPoint {
-        // Position centered above the blob
-        let blobSize: CGFloat = 64
+    private static func calculatePosition(spritePosition: CGPoint) -> CGPoint {
+        // Position centered above the sprite
+        let spriteSize: CGFloat = 64
         let gap: CGFloat = 8
         var position = CGPoint(
-            x: blobPosition.x + blobSize / 2 - windowSize.width / 2,  // Centered horizontally
-            y: blobPosition.y + blobSize + gap  // Above the blob
+            x: spritePosition.x + spriteSize / 2 - windowSize.width / 2,  // Centered horizontally
+            y: spritePosition.y + spriteSize + gap  // Above the sprite
         )
 
-        // Find the screen containing the blob
-        let screen = NSScreen.screens.first { $0.frame.contains(blobPosition) } ?? NSScreen.main
+        // Find the screen containing the sprite
+        let screen = NSScreen.screens.first { $0.frame.contains(spritePosition) } ?? NSScreen.main
 
         if let screen {
             let screenFrame = screen.visibleFrame
 
-            // If doesn't fit above, position below the blob
+            // If doesn't fit above, position below the sprite
             if position.y + windowSize.height > screenFrame.maxY - 5 {
-                position.y = blobPosition.y - windowSize.height - gap
+                position.y = spritePosition.y - windowSize.height - gap
             }
 
             // Keep within horizontal bounds

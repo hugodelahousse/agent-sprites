@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    name: Build & Test
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app
+
+      - name: Build
+        run: swift build -c release
+
+      - name: Run tests
+        run: swift test
+
+  release:
+    name: Create Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: macos-14
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app
+
+      - name: Build release
+        run: make release
+
+      - name: Get version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Create zip archive
+        run: |
+          cd .build/release
+          zip -r AgentSprites-${{ steps.version.outputs.VERSION }}.zip AgentSprites.app
+          mv AgentSprites-${{ steps.version.outputs.VERSION }}.zip ../../
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: AgentSprites v${{ steps.version.outputs.VERSION }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            AgentSprites-${{ steps.version.outputs.VERSION }}.zip

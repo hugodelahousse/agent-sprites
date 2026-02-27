@@ -12,18 +12,18 @@ private func timestamp() -> String {
 @main
 struct AgentSpritesApp: App {
     @StateObject private var viewModel = SessionViewModel()
-    @StateObject private var blobCoordinator = BlobCoordinator()
+    @StateObject private var spriteCoordinator = SpriteCoordinator()
     @StateObject private var appState = AppState()
 
     var body: some Scene {
         MenuBarExtra {
-            MenuBarView(viewModel: viewModel, blobCoordinator: blobCoordinator, appState: appState)
+            MenuBarView(viewModel: viewModel, spriteCoordinator: spriteCoordinator, appState: appState)
         } label: {
             Label("AgentSprites", systemImage: viewModel.menuBarIcon)
         }
         .menuBarExtraStyle(.window)
         .onChange(of: viewModel.sessions) { newSessions in
-            blobCoordinator.updateSessions(newSessions)
+            spriteCoordinator.updateSessions(newSessions)
         }
     }
 }
@@ -47,7 +47,56 @@ final class AppState: ObservableObject {
     private let logger = Logger(subsystem: "com.agentsprites.app", category: "AppState")
 
     init() {
+        installBundledCharacterPacks()
         checkHookStatus()
+    }
+
+    /// Install bundled character packs to Application Support if not already present
+    private func installBundledCharacterPacks() {
+        guard let bundlePath = Bundle.main.resourcePath else {
+            logger.debug("No bundle resource path found")
+            return
+        }
+
+        let bundledPacksPath = URL(fileURLWithPath: bundlePath).appendingPathComponent("CharacterPacks")
+        let destinationPath = AgentSpritesConstants.charactersDirectory
+
+        // Check if bundled packs exist
+        guard FileManager.default.fileExists(atPath: bundledPacksPath.path) else {
+            logger.debug("No bundled character packs found")
+            return
+        }
+
+        // Create Characters directory if needed
+        do {
+            try FileManager.default.createDirectory(at: destinationPath, withIntermediateDirectories: true)
+        } catch {
+            logger.error("Failed to create Characters directory: \(error.localizedDescription, privacy: .public)")
+            return
+        }
+
+        // Copy each bundled pack if it doesn't already exist
+        guard let bundledPacks = try? FileManager.default.contentsOfDirectory(atPath: bundledPacksPath.path) else {
+            return
+        }
+
+        for packName in bundledPacks {
+            let sourcePack = bundledPacksPath.appendingPathComponent(packName)
+            let destPack = destinationPath.appendingPathComponent(packName)
+
+            // Skip if already installed
+            if FileManager.default.fileExists(atPath: destPack.path) {
+                logger.debug("Pack '\(packName, privacy: .public)' already installed, skipping")
+                continue
+            }
+
+            do {
+                try FileManager.default.copyItem(at: sourcePack, to: destPack)
+                logger.info("Installed bundled character pack: \(packName, privacy: .public)")
+            } catch {
+                logger.error("Failed to install pack '\(packName, privacy: .public)': \(error.localizedDescription, privacy: .public)")
+            }
+        }
     }
 
     func checkHookStatus() {

@@ -125,7 +125,7 @@ struct SessionCharacterIndicator: View {
 
     private var hueRotation: Double {
         guard CharacterManager.shared.usesHueRotation else { return 0 }
-        // Same hash algorithm as BlobCoordinator
+        // Same hash algorithm as SpriteCoordinator
         var hash: UInt64 = 5381 ^ CharacterManager.shared.mappingSeed
         for char in workingDirectory.utf8 {
             hash = ((hash << 5) &+ hash) &+ UInt64(char)

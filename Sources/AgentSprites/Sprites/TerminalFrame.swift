@@ -12,7 +12,7 @@ struct TerminalFrame<Content: View>: View {
         ZStack {
             // Dark background
             RoundedRectangle(cornerRadius: 8)
-                .fill(BlobColors.terminalBackground)
+                .fill(SpriteColors.terminalBackground)
 
             // Static scanline overlay (no animation to save CPU)
             ScanlineOverlay(offset: 0)
@@ -24,14 +24,14 @@ struct TerminalFrame<Content: View>: View {
 
             // CRT edge glow
             RoundedRectangle(cornerRadius: 8)
-                .stroke(BlobColors.terminalGreen.opacity(0.3), lineWidth: 1)
+                .stroke(SpriteColors.terminalGreen.opacity(0.3), lineWidth: 1)
 
             // Inner glow
             RoundedRectangle(cornerRadius: 6)
-                .stroke(BlobColors.terminalGreen.opacity(0.1), lineWidth: 2)
+                .stroke(SpriteColors.terminalGreen.opacity(0.1), lineWidth: 2)
                 .padding(2)
         }
-        .shadow(color: BlobColors.terminalGreen.opacity(0.2), radius: 8)
+        .shadow(color: SpriteColors.terminalGreen.opacity(0.2), radius: 8)
     }
 }
 

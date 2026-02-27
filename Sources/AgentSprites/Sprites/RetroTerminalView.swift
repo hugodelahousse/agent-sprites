@@ -23,7 +23,7 @@ struct RetroTerminalView: View {
                 HStack(spacing: 8) {
                     Text(sessionName.uppercased())
                         .font(.system(size: 10, weight: .bold, design: .monospaced))
-                        .foregroundColor(BlobColors.terminalGreen)
+                        .foregroundColor(SpriteColors.terminalGreen)
                         .lineLimit(1)
                         .help(tooltipText)
 
@@ -33,7 +33,7 @@ struct RetroTerminalView: View {
                     Button(action: onFocusTerminal) {
                         Image(systemName: "arrow.up.forward.square")
                             .font(.system(size: 11))
-                            .foregroundColor(BlobColors.terminalGreen)
+                            .foregroundColor(SpriteColors.terminalGreen)
                     }
                     .buttonStyle(.plain)
 
@@ -42,42 +42,42 @@ struct RetroTerminalView: View {
                         Button(action: onDismiss) {
                             Text("X")
                                 .font(.system(size: 10, weight: .bold, design: .monospaced))
-                                .foregroundColor(BlobColors.terminalGreen)
+                                .foregroundColor(SpriteColors.terminalGreen)
                         }
                         .buttonStyle(.plain)
                         .padding(.horizontal, 4)
                         .padding(.vertical, 2)
                         .background(
                             RoundedRectangle(cornerRadius: 2)
-                                .stroke(BlobColors.terminalGreen.opacity(0.5), lineWidth: 1)
+                                .stroke(SpriteColors.terminalGreen.opacity(0.5), lineWidth: 1)
                         )
                     }
                 }
 
                 Divider()
-                    .background(BlobColors.terminalDimGreen)
+                    .background(SpriteColors.terminalDimGreen)
 
                 // Status indicator
                 HStack(spacing: 6) {
                     Circle()
-                        .fill(BlobColors.color(for: status))
+                        .fill(SpriteColors.color(for: status))
                         .frame(width: 8, height: 8)
 
                     Text(status.displayName.uppercased())
                         .font(.system(size: 9, weight: .medium, design: .monospaced))
-                        .foregroundColor(BlobColors.terminalDimGreen)
+                        .foregroundColor(SpriteColors.terminalDimGreen)
                 }
 
                 // Message with blinking cursor
                 HStack(spacing: 0) {
                     Text("> ")
-                        .foregroundColor(BlobColors.terminalDimGreen)
+                        .foregroundColor(SpriteColors.terminalDimGreen)
 
                     Text(message)
-                        .foregroundColor(BlobColors.terminalGreen)
+                        .foregroundColor(SpriteColors.terminalGreen)
 
                     Text("_")
-                        .foregroundColor(BlobColors.terminalGreen)
+                        .foregroundColor(SpriteColors.terminalGreen)
                 }
                 .font(.system(size: 11, weight: .regular, design: .monospaced))
 

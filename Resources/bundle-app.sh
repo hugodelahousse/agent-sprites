@@ -37,12 +37,20 @@ rm -rf "$APP_BUNDLE"
 mkdir -p "$MACOS"
 mkdir -p "$HELPERS"
 mkdir -p "$RESOURCES"
+mkdir -p "$RESOURCES/CharacterPacks"
 
 # Copy executables
 cp "$APP_EXECUTABLE" "$MACOS/"
 cp "$CLI_EXECUTABLE" "$HELPERS/"
 chmod +x "$MACOS/AgentSprites"
 chmod +x "$HELPERS/agentsprites-cli"
+
+# Copy bundled character packs (slime is the default)
+SLIME_PACK="$PROJECT_DIR/CharacterPacks/slime"
+if [ -d "$SLIME_PACK" ]; then
+    cp -r "$SLIME_PACK" "$RESOURCES/CharacterPacks/"
+    echo "  - Bundled pack: slime"
+fi
 
 # Create Info.plist
 cat > "$CONTENTS/Info.plist" << 'EOF'

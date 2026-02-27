@@ -19,7 +19,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
 // MARK: - Main Settings View
 
 struct SettingsView: View {
-    @ObservedObject var blobCoordinator: BlobCoordinator
+    @ObservedObject var spriteCoordinator: SpriteCoordinator
     @ObservedObject var appState: AppState
     @State private var selectedTab: SettingsTab? = .general
 
@@ -62,9 +62,9 @@ struct SettingsView: View {
     private var detailView: some View {
         switch selectedTab {
         case .general:
-            GeneralSettingsView(appState: appState, blobCoordinator: blobCoordinator)
+            GeneralSettingsView(appState: appState, spriteCoordinator: spriteCoordinator)
         case .characters:
-            CharacterSettingsView(blobCoordinator: blobCoordinator)
+            CharacterSettingsView(spriteCoordinator: spriteCoordinator)
         case .none:
             Text("Select a category")
                 .foregroundColor(.secondary)
@@ -76,7 +76,7 @@ struct SettingsView: View {
 
 struct GeneralSettingsView: View {
     @ObservedObject var appState: AppState
-    @ObservedObject var blobCoordinator: BlobCoordinator
+    @ObservedObject var spriteCoordinator: SpriteCoordinator
 
     var body: some View {
         Form {
@@ -109,7 +109,7 @@ struct GeneralSettingsView: View {
 
             #if DEBUG
             Section {
-                Toggle("Show Ledge Overlay", isOn: $blobCoordinator.debugLedgesEnabled)
+                Toggle("Show Ledge Overlay", isOn: $spriteCoordinator.debugLedgesEnabled)
             } header: {
                 Text("Debug")
             } footer: {
@@ -134,19 +134,19 @@ struct GeneralSettingsView: View {
 // MARK: - Character Settings
 
 struct CharacterSettingsView: View {
-    @ObservedObject var blobCoordinator: BlobCoordinator
+    @ObservedObject var spriteCoordinator: SpriteCoordinator
     @State private var previewState: PreviewState = .idle
     @State private var showImportSheet = false
 
     var body: some View {
         Form {
             Section {
-                ForEach(blobCoordinator.availablePacks) { pack in
+                ForEach(spriteCoordinator.availablePacks) { pack in
                     PackRowView(
                         pack: pack,
-                        isSelected: blobCoordinator.selectedPackId == pack.id
+                        isSelected: spriteCoordinator.selectedPackId == pack.id
                     ) {
-                        blobCoordinator.selectedPackId = pack.id
+                        spriteCoordinator.selectedPackId = pack.id
                     }
                 }
 
@@ -167,7 +167,7 @@ struct CharacterSettingsView: View {
                         .foregroundColor(.secondary)
                     Spacer()
                     Button("Randomize") {
-                        blobCoordinator.randomizeMappings()
+                        spriteCoordinator.randomizeMappings()
                     }
                 }
             } header: {
@@ -189,7 +189,7 @@ struct CharacterSettingsView: View {
                         }
                     }
 
-                    if let selectedPack = blobCoordinator.availablePacks.first(where: { $0.id == blobCoordinator.selectedPackId }) {
+                    if let selectedPack = spriteCoordinator.availablePacks.first(where: { $0.id == spriteCoordinator.selectedPackId }) {
                         CharacterPreviewGrid(
                             pack: selectedPack,
                             state: previewState.rawValue
@@ -207,7 +207,7 @@ struct CharacterSettingsView: View {
         .sheet(isPresented: $showImportSheet) {
             ImportPackView { packId in
                 CharacterManager.shared.selectNewlyImportedPack(packId)
-                blobCoordinator.selectedPackId = packId
+                spriteCoordinator.selectedPackId = packId
             }
         }
     }
@@ -347,14 +347,14 @@ final class SettingsWindowController: NSObject {
         super.init()
     }
 
-    func show(blobCoordinator: BlobCoordinator, appState: AppState) {
+    func show(spriteCoordinator: SpriteCoordinator, appState: AppState) {
         if let existingWindow = window, existingWindow.isVisible {
             existingWindow.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
         }
 
-        let settingsView = SettingsView(blobCoordinator: blobCoordinator, appState: appState)
+        let settingsView = SettingsView(spriteCoordinator: spriteCoordinator, appState: appState)
         let hostingController = NSHostingController(rootView: settingsView)
 
         let window = NSWindow(contentViewController: hostingController)

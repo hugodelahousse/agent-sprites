@@ -329,7 +329,7 @@ final class CharacterManager {
         config = SpritesConfig(mode: "randomCharacter", characters: characterOrder, character: nil)
     }
 
-    /// Get character for a blob at a given index (for sequential mode)
+    /// Get character for a sprite at a given index (for sequential mode)
     func character(forIndex index: Int) -> SpriteCharacter? {
         guard !characterOrder.isEmpty else { return nil }
         let charId = characterOrder[index % characterOrder.count]

@@ -58,7 +58,7 @@ The app uses **Distributed Notifications** for IPC between CLI and App:
 
 ### Value Types
 - Prefer `struct` and `enum` over `class` unless reference semantics are needed
-- Classes are appropriate for: caches (`SpriteCharacter`), AppKit wrappers (`BlobWindowController`), view models with identity
+- Classes are appropriate for: caches (`SpriteCharacter`), AppKit wrappers (`SpriteWindowController`), view models with identity
 
 ### Modern Syntax
 - Use `if let` shorthand (Swift 5.7+): `if let foo` not `if let foo = foo`
@@ -113,7 +113,7 @@ This app runs continuously in the background - CPU/memory efficiency is paramoun
 
 **Animation & Rendering:**
 - Never recreate SwiftUI views every frame - use `@ObservedObject`/`@Published` to update existing views
-- Stop CVDisplayLink/timers when there's nothing to animate (no active blobs)
+- Stop CVDisplayLink/timers when there's nothing to animate (no active sprites)
 - Only update window positions when they actually change
 - Use reference equality (`===`) for images to avoid unnecessary diffing
 

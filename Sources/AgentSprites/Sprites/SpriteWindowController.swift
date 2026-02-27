@@ -2,9 +2,9 @@ import AppKit
 import SwiftUI
 import AgentSpritesCore
 
-/// Observable model for blob state - allows efficient SwiftUI updates
+/// Observable model for sprite state - allows efficient SwiftUI updates
 @MainActor
-final class BlobViewModel: ObservableObject {
+final class SpriteViewModel: ObservableObject {
     @Published var image: NSImage?
     @Published var facingRight: Bool = true
     @Published var hueRotation: Double = 0
@@ -27,13 +27,13 @@ final class BlobViewModel: ObservableObject {
     }
 }
 
-/// Manages an NSPanel window for a single blob sprite
+/// Manages an NSPanel window for a single character sprite
 @MainActor
-final class BlobWindowController {
+final class SpriteWindowController {
     let sessionId: String
     private let panel: NSPanel
-    private let viewModel: BlobViewModel
-    private let hostingView: NSHostingView<BlobContentView>
+    private let viewModel: SpriteViewModel
+    private let hostingView: NSHostingView<SpriteContentView>
     private var tooltipWindow: NSPanel?
     private var lastPosition: CGPoint = .zero
 
@@ -57,7 +57,7 @@ final class BlobWindowController {
 
     init(sessionId: String) {
         self.sessionId = sessionId
-        self.viewModel = BlobViewModel()
+        self.viewModel = SpriteViewModel()
 
         let panel = NSPanel(
             contentRect: NSRect(origin: .zero, size: Self.windowSize),
@@ -76,7 +76,7 @@ final class BlobWindowController {
         panel.hidesOnDeactivate = false
 
         self.panel = panel
-        let contentView = BlobContentView(viewModel: viewModel, size: Self.windowSize)
+        let contentView = SpriteContentView(viewModel: viewModel, size: Self.windowSize)
         self.hostingView = NSHostingView(rootView: contentView)
         hostingView.frame = panel.contentView?.bounds ?? .zero
 
@@ -193,25 +193,25 @@ final class BlobWindowController {
         let fittingSize = hostingView.fittingSize
         tooltip.setContentSize(fittingSize)
 
-        // Position centered above the blob
-        let blobFrame = panel.frame
+        // Position centered above the sprite
+        let spriteFrame = panel.frame
         let gap: CGFloat = 8
         var tooltipOrigin = CGPoint(
-            x: blobFrame.midX - fittingSize.width / 2,  // Centered horizontally
-            y: blobFrame.maxY + gap  // Above the blob
+            x: spriteFrame.midX - fittingSize.width / 2,  // Centered horizontally
+            y: spriteFrame.maxY + gap  // Above the sprite
         )
 
-        // Find the screen containing the blob (use center of blob frame)
-        let blobCenter = CGPoint(x: blobFrame.midX, y: blobFrame.midY)
-        let screen = NSScreen.screens.first { $0.frame.contains(blobCenter) } ?? NSScreen.main
+        // Find the screen containing the sprite (use center of sprite frame)
+        let spriteCenter = CGPoint(x: spriteFrame.midX, y: spriteFrame.midY)
+        let screen = NSScreen.screens.first { $0.frame.contains(spriteCenter) } ?? NSScreen.main
 
         // Keep on screen
         if let screen {
             let screenFrame = screen.visibleFrame
 
-            // If doesn't fit above, position below the blob
+            // If doesn't fit above, position below the sprite
             if tooltipOrigin.y + fittingSize.height > screenFrame.maxY - 5 {
-                tooltipOrigin.y = blobFrame.minY - fittingSize.height - gap
+                tooltipOrigin.y = spriteFrame.minY - fittingSize.height - gap
             }
 
             // Keep within horizontal bounds
@@ -227,7 +227,7 @@ final class BlobWindowController {
 
 /// Tooltip view using terminal frame style
 private struct TooltipView: View {
-    let info: BlobWindowController.SessionInfo
+    let info: SpriteWindowController.SessionInfo
 
     var body: some View {
         TerminalFrame {
@@ -235,28 +235,28 @@ private struct TooltipView: View {
                 // Show summary as title if available, otherwise folder name
                 Text(info.summary ?? info.name)
                     .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .foregroundColor(BlobColors.terminalGreen)
+                    .foregroundColor(SpriteColors.terminalGreen)
                     .lineLimit(2)
 
                 HStack(spacing: 6) {
                     Text(info.status.uppercased())
                         .font(.system(size: 9, design: .monospaced))
-                        .foregroundColor(BlobColors.terminalDimGreen)
+                        .foregroundColor(SpriteColors.terminalDimGreen)
 
                     // Show git branch if available
                     if let branch = info.gitBranch, !branch.isEmpty {
                         Text("•")
                             .font(.system(size: 9))
-                            .foregroundColor(BlobColors.terminalDimGreen.opacity(0.5))
+                            .foregroundColor(SpriteColors.terminalDimGreen.opacity(0.5))
                         Text(branch)
                             .font(.system(size: 9, design: .monospaced))
-                            .foregroundColor(BlobColors.terminalDimGreen)
+                            .foregroundColor(SpriteColors.terminalDimGreen)
                     }
                 }
 
                 Text(info.directory)
                     .font(.system(size: 8, design: .monospaced))
-                    .foregroundColor(BlobColors.terminalDimGreen.opacity(0.7))
+                    .foregroundColor(SpriteColors.terminalDimGreen.opacity(0.7))
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
@@ -266,13 +266,13 @@ private struct TooltipView: View {
     }
 }
 
-/// SwiftUI wrapper view for the blob - observes view model for efficient updates
-private struct BlobContentView: View {
-    @ObservedObject var viewModel: BlobViewModel
+/// SwiftUI wrapper view for the sprite - observes view model for efficient updates
+private struct SpriteContentView: View {
+    @ObservedObject var viewModel: SpriteViewModel
     let size: CGSize
 
     var body: some View {
-        BlobView(image: viewModel.image, facingRight: viewModel.facingRight, size: size, rotation: viewModel.surfaceRotation)
+        SpriteView(image: viewModel.image, facingRight: viewModel.facingRight, size: size, rotation: viewModel.surfaceRotation)
             .hueRotation(Angle(degrees: viewModel.hueRotation))
     }
 }

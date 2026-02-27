@@ -2,12 +2,12 @@ import AppKit
 import CoreGraphics
 import QuartzCore
 
-/// Observes window positions on screen to provide ledges for blobs to walk on
+/// Observes window positions on screen to provide ledges for sprites to walk on
 @MainActor
 final class WindowObserver {
     static let shared = WindowObserver()
 
-    /// Represents a ledge (top edge of a window) that blobs can walk on
+    /// Represents a ledge (top edge of a window) that sprites can walk on
     struct Ledge: Sendable {
         let minX: CGFloat
         let maxX: CGFloat
@@ -21,7 +21,7 @@ final class WindowObserver {
         }
     }
 
-    /// Represents a wall (vertical edge of a window) that blobs can climb
+    /// Represents a wall (vertical edge of a window) that sprites can climb
     struct Wall: Sendable {
         enum Side: Sendable { case left, right }
 
@@ -361,12 +361,12 @@ final class WindowObserver {
         return result
     }
 
-    /// Find the ledge at or below a given position that the blob can land on
+    /// Find the ledge at or below a given position that the sprite can land on
     func findLedgeBelow(position: CGPoint, currentLedgeY: CGFloat?) -> Ledge? {
         let ledges = getLedges()
 
-        // Find the highest ledge that is below the blob's current Y
-        // and that the blob is horizontally within
+        // Find the highest ledge that is below the sprite's current Y
+        // and that the sprite is horizontally within
         for ledge in ledges {
             // Must be at or below current position
             if ledge.y >= position.y - 5 {
@@ -387,7 +387,7 @@ final class WindowObserver {
         return nil
     }
 
-    /// Find the ledge the blob is currently standing on
+    /// Find the ledge the sprite is currently standing on
     func findCurrentLedge(position: CGPoint, tolerance: CGFloat = 5) -> Ledge? {
         let ledges = getLedges()
 

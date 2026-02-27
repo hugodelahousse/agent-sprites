@@ -31,32 +31,32 @@ private func allScreensBounds() -> CGRect {
     return bounds
 }
 
-/// Coordinates all blob sprites and their animation
+/// Coordinates all character sprites and their animation
 @MainActor
-final class BlobCoordinator: ObservableObject {
-    private static let enabledKey = "FloatingBlobsEnabled"
+final class SpriteCoordinator: ObservableObject {
+    private static let enabledKey = "FloatingSpritesEnabled"
 
     @Published var isEnabled: Bool {
         didSet {
             UserDefaults.standard.set(isEnabled, forKey: Self.enabledKey)
             if isEnabled {
-                showAllBlobs()
+                showAllSprites()
             } else {
-                hideAllBlobs()
+                hideAllSprites()
             }
             updateAnimationState()
         }
     }
 
-    private let logger = Logger(subsystem: "com.agentsprites.app", category: "BlobCoordinator")
-    private var blobWindows: [String: BlobWindowController] = [:]
-    private var blobPhysics: [String: SlimePhysics] = [:]
-    private var blobAnimators: [String: SpriteAnimator] = [:]
-    private var blobCharacters: [String: SpriteCharacter] = [:]
-    private var blobHueRotations: [String: Double] = [:]
-    private var nextBlobIndex: Int = 0
-    private var blobHovered: [String: Bool] = [:]
-    private var blobDragging: [String: Bool] = [:]
+    private let logger = Logger(subsystem: "com.agentsprites.app", category: "SpriteCoordinator")
+    private var spriteWindows: [String: SpriteWindowController] = [:]
+    private var spritePhysics: [String: SpritePhysics] = [:]
+    private var spriteAnimators: [String: SpriteAnimator] = [:]
+    private var spriteCharacters: [String: SpriteCharacter] = [:]
+    private var spriteHueRotations: [String: Double] = [:]
+    private var nextSpriteIndex: Int = 0
+    private var spriteHovered: [String: Bool] = [:]
+    private var spriteDragging: [String: Bool] = [:]
     private var messageWindows: [String: MessageWindowController] = [:]
     private var dismissedMessages: [String: SessionStatus] = [:]  // Track dismissed messages by status
     private var autoDismissTimers: [String: Timer] = [:]  // Auto-dismiss timers for waitingForInput
@@ -90,7 +90,7 @@ final class BlobCoordinator: ObservableObject {
         didSet {
             guard oldValue != selectedPackId, !selectedPackId.isEmpty else { return }
             CharacterManager.shared.selectPack(selectedPackId)
-            reloadAllBlobs()
+            reloadAllSprites()
         }
     }
 
@@ -104,13 +104,13 @@ final class BlobCoordinator: ObservableObject {
         // Set up callback for when mappings are randomized
         CharacterManager.shared.onMappingsRandomized = { [weak self] in
             Task { @MainActor in
-                self?.reloadAllBlobs()
+                self?.reloadAllSprites()
             }
         }
 
-        // Set up callback for debug overlay to get blob bounds
-        ledgeDebugOverlay.getBlobBounds = { [weak self] in
-            self?.getBlobBounds() ?? []
+        // Set up callback for debug overlay to get sprite bounds
+        ledgeDebugOverlay.getSpriteBounds = { [weak self] in
+            self?.getSpriteBounds() ?? []
         }
 
         setupDisplayLink()
@@ -122,19 +122,19 @@ final class BlobCoordinator: ObservableObject {
         CharacterManager.shared.randomizeMappings()
     }
 
-    /// Reload all blobs with new characters (called when pack changes)
-    private func reloadAllBlobs() {
+    /// Reload all sprites with new characters (called when pack changes)
+    private func reloadAllSprites() {
         let currentSessions = sessions
-        // Remove all existing blobs
-        for id in blobWindows.keys {
-            removeBlob(forSessionId: id)
+        // Remove all existing sprites
+        for id in spriteWindows.keys {
+            removeSprite(forSessionId: id)
         }
-        nextBlobIndex = 0
-        // Recreate blobs for current sessions
+        nextSpriteIndex = 0
+        // Recreate sprites for current sessions
         for session in currentSessions {
-            createBlob(for: session)
+            createSprite(for: session)
         }
-        logger.info("Reloaded all blobs with new character pack: \(self.selectedPackId, privacy: .public)")
+        logger.info("Reloaded all sprites with new character pack: \(self.selectedPackId, privacy: .public)")
     }
 
     deinit {
@@ -147,44 +147,44 @@ final class BlobCoordinator: ObservableObject {
 
     func updateSessions(_ newSessions: [SessionState]) {
         let startTime = Date()
-        logger.info("[TIMING] \(timestamp(), privacy: .public) BlobCoordinator.updateSessions called with \(newSessions.count, privacy: .public) sessions")
+        logger.info("[TIMING] \(timestamp(), privacy: .public) SpriteCoordinator.updateSessions called with \(newSessions.count, privacy: .public) sessions")
 
         sessions = newSessions
         guard isEnabled else {
-            logger.info("[TIMING] \(timestamp(), privacy: .public) Blobs disabled, skipping")
+            logger.info("[TIMING] \(timestamp(), privacy: .public) Sprites disabled, skipping")
             return
         }
 
-        let currentIds = Set(blobWindows.keys)
+        let currentIds = Set(spriteWindows.keys)
         let newIds = Set(newSessions.map { $0.id })
 
-        // Remove blobs for sessions that no longer exist
+        // Remove sprites for sessions that no longer exist
         for id in currentIds.subtracting(newIds) {
-            removeBlob(forSessionId: id)
+            removeSprite(forSessionId: id)
         }
 
-        // Add blobs for new sessions
+        // Add sprites for new sessions
         for session in newSessions {
-            if blobWindows[session.id] == nil {
-                logger.info("[TIMING] \(timestamp(), privacy: .public) Creating new blob for session \(session.id.prefix(8), privacy: .public)")
-                createBlob(for: session)
+            if spriteWindows[session.id] == nil {
+                logger.info("[TIMING] \(timestamp(), privacy: .public) Creating new sprite for session \(session.id.prefix(8), privacy: .public)")
+                createSprite(for: session)
             } else {
-                // Update session info for existing blob
-                updateBlobInfo(for: session)
+                // Update session info for existing sprite
+                updateSpriteInfo(for: session)
             }
         }
 
-        // Start/stop animation based on whether we have blobs
+        // Start/stop animation based on whether we have sprites
         updateAnimationState()
 
         pendingRenderTime = Date()  // Track for animation frame timing
         let elapsed = Date().timeIntervalSince(startTime) * 1000
-        logger.info("[TIMING] \(timestamp(), privacy: .public) BlobCoordinator.updateSessions complete (+\(String(format: "%.1f", elapsed), privacy: .public)ms)")
+        logger.info("[TIMING] \(timestamp(), privacy: .public) SpriteCoordinator.updateSessions complete (+\(String(format: "%.1f", elapsed), privacy: .public)ms)")
     }
 
-    /// Start or stop animation based on whether there are active blobs
+    /// Start or stop animation based on whether there are active sprites
     private func updateAnimationState() {
-        let shouldAnimate = isEnabled && !blobWindows.isEmpty
+        let shouldAnimate = isEnabled && !spriteWindows.isEmpty
         let isAnimating = displayLink.map { CVDisplayLinkIsRunning($0) } ?? false
 
         if shouldAnimate && !isAnimating {
@@ -194,9 +194,9 @@ final class BlobCoordinator: ObservableObject {
         }
     }
 
-    // MARK: - Private - Blob Management
+    // MARK: - Private - Sprite Management
 
-    private func createBlob(for session: SessionState) {
+    private func createSprite(for session: SessionState) {
         // Pick a random screen to spawn on
         let screens = NSScreen.screens
         guard !screens.isEmpty else { return }
@@ -210,49 +210,49 @@ final class BlobCoordinator: ObservableObject {
         // Spawn from top of screen - they'll fall down
         let startY = screenBounds.maxY - 60
 
-        var physics = SlimePhysics(x: startX, groundY: groundY)
+        var physics = SpritePhysics(x: startX, groundY: groundY)
         physics.position = CGPoint(x: startX, y: startY)  // Start at top
-        blobPhysics[session.id] = physics
+        spritePhysics[session.id] = physics
 
-        // Get character for this blob (by path hash or sequential index)
+        // Get character for this sprite (by path hash or sequential index)
         let character: SpriteCharacter
         if CharacterManager.shared.usesRandomCharacter {
             guard let char = CharacterManager.shared.character(forPath: session.workingDirectory) else {
-                logger.error("Failed to load character for blob")
+                logger.error("Failed to load character for sprite")
                 return
             }
             character = char
         } else {
-            let blobIndex = nextBlobIndex
-            nextBlobIndex += 1
-            guard let char = CharacterManager.shared.character(forIndex: blobIndex) else {
-                logger.error("Failed to load character for blob")
+            let spriteIndex = nextSpriteIndex
+            nextSpriteIndex += 1
+            guard let char = CharacterManager.shared.character(forIndex: spriteIndex) else {
+                logger.error("Failed to load character for sprite")
                 return
             }
             character = char
         }
-        blobCharacters[session.id] = character
+        spriteCharacters[session.id] = character
 
         let animator = SpriteAnimator(character: character)
-        blobAnimators[session.id] = animator
+        spriteAnimators[session.id] = animator
 
         // Calculate hue rotation based on directory path hash (only used if in hueRotate mode)
         let hueRotation = CharacterManager.shared.usesHueRotation ? hueForPath(session.workingDirectory) : 0
-        blobHueRotations[session.id] = hueRotation
+        spriteHueRotations[session.id] = hueRotation
 
-        blobHovered[session.id] = false
-        blobDragging[session.id] = false
+        spriteHovered[session.id] = false
+        spriteDragging[session.id] = false
 
-        let window = BlobWindowController(sessionId: session.id)
+        let window = SpriteWindowController(sessionId: session.id)
 
         window.onClick = { [weak self] in
             Task { @MainActor in
-                await self?.handleBlobClick(sessionId: session.id)
+                await self?.handleSpriteClick(sessionId: session.id)
             }
         }
 
         window.onHoverChanged = { [weak self] isHovered in
-            self?.blobHovered[session.id] = isHovered
+            self?.spriteHovered[session.id] = isHovered
         }
 
         window.onDragStart = { [weak self] in
@@ -268,7 +268,7 @@ final class BlobCoordinator: ObservableObject {
         }
 
         // Set session info for hover tooltip
-        window.sessionInfo = BlobWindowController.SessionInfo(
+        window.sessionInfo = SpriteWindowController.SessionInfo(
             name: session.displayName,
             status: session.status.displayName,
             directory: session.workingDirectory,
@@ -276,10 +276,10 @@ final class BlobCoordinator: ObservableObject {
             gitBranch: session.gitBranch
         )
 
-        blobWindows[session.id] = window
+        spriteWindows[session.id] = window
         window.show()
 
-        logger.debug("Created blob for session: \(session.id, privacy: .public)")
+        logger.debug("Created sprite for session: \(session.id, privacy: .public)")
     }
 
     private func hueForPath(_ path: String) -> Double {
@@ -292,8 +292,8 @@ final class BlobCoordinator: ObservableObject {
         return Double(hash % 360)
     }
 
-    private func updateBlobInfo(for session: SessionState) {
-        blobWindows[session.id]?.sessionInfo = BlobWindowController.SessionInfo(
+    private func updateSpriteInfo(for session: SessionState) {
+        spriteWindows[session.id]?.sessionInfo = SpriteWindowController.SessionInfo(
             name: session.displayName,
             status: session.status.displayName,
             directory: session.workingDirectory,
@@ -302,40 +302,40 @@ final class BlobCoordinator: ObservableObject {
         )
     }
 
-    private func removeBlob(forSessionId id: String) {
-        blobWindows[id]?.close()
-        blobWindows.removeValue(forKey: id)
-        blobPhysics.removeValue(forKey: id)
-        blobAnimators.removeValue(forKey: id)
-        blobCharacters.removeValue(forKey: id)
-        blobHueRotations.removeValue(forKey: id)
-        blobHovered.removeValue(forKey: id)
-        blobDragging.removeValue(forKey: id)
+    private func removeSprite(forSessionId id: String) {
+        spriteWindows[id]?.close()
+        spriteWindows.removeValue(forKey: id)
+        spritePhysics.removeValue(forKey: id)
+        spriteAnimators.removeValue(forKey: id)
+        spriteCharacters.removeValue(forKey: id)
+        spriteHueRotations.removeValue(forKey: id)
+        spriteHovered.removeValue(forKey: id)
+        spriteDragging.removeValue(forKey: id)
         messageWindows[id]?.close()
         messageWindows.removeValue(forKey: id)
         dismissedMessages.removeValue(forKey: id)
         autoDismissTimers[id]?.invalidate()
         autoDismissTimers.removeValue(forKey: id)
 
-        logger.debug("Removed blob for session: \(id, privacy: .public)")
+        logger.debug("Removed sprite for session: \(id, privacy: .public)")
 
-        // Stop animation if no more blobs
+        // Stop animation if no more sprites
         updateAnimationState()
     }
 
-    private func showAllBlobs() {
+    private func showAllSprites() {
         for session in sessions {
-            if blobWindows[session.id] == nil {
-                createBlob(for: session)
+            if spriteWindows[session.id] == nil {
+                createSprite(for: session)
             } else {
-                blobWindows[session.id]?.show()
+                spriteWindows[session.id]?.show()
             }
             updateMessageWindow(for: session)
         }
     }
 
-    private func hideAllBlobs() {
-        for (_, window) in blobWindows {
+    private func hideAllSprites() {
+        for (_, window) in spriteWindows {
             window.hide()
         }
         for (_, window) in messageWindows {
@@ -343,45 +343,45 @@ final class BlobCoordinator: ObservableObject {
         }
     }
 
-    private func handleBlobClick(sessionId: String) async {
+    private func handleSpriteClick(sessionId: String) async {
         guard let session = sessions.first(where: { $0.id == sessionId }) else { return }
-        logger.debug("Blob clicked for session: \(sessionId, privacy: .public)")
+        logger.debug("Sprite clicked for session: \(sessionId, privacy: .public)")
         await terminalFocuser.focusSession(session)
     }
 
     // MARK: - Private - Drag Handling
 
     private func handleDragStart(sessionId: String) {
-        blobDragging[sessionId] = true
-        blobPhysics[sessionId]?.startDrag()
+        spriteDragging[sessionId] = true
+        spritePhysics[sessionId]?.startDrag()
         logger.debug("Drag started for session: \(sessionId, privacy: .public)")
     }
 
     private func handleDragUpdate(sessionId: String, screenPoint: CGPoint) {
-        guard blobDragging[sessionId] == true else { return }
+        guard spriteDragging[sessionId] == true else { return }
 
         let now = CACurrentMediaTime()
         let deltaTime = lastFrameTime > 0 ? now - lastFrameTime : 1.0 / 60.0
 
-        // Center the blob on the cursor
-        let blobCenter = CGPoint(
+        // Center the sprite on the cursor
+        let spriteCenter = CGPoint(
             x: screenPoint.x,
             y: screenPoint.y
         )
 
-        blobPhysics[sessionId]?.updateDrag(to: blobCenter, deltaTime: CGFloat(deltaTime))
+        spritePhysics[sessionId]?.updateDrag(to: spriteCenter, deltaTime: CGFloat(deltaTime))
     }
 
     private func handleDragEnd(sessionId: String) {
-        blobDragging[sessionId] = false
-        blobPhysics[sessionId]?.endDrag()
+        spriteDragging[sessionId] = false
+        spritePhysics[sessionId]?.endDrag()
         logger.debug("Drag ended for session: \(sessionId, privacy: .public)")
     }
 
     // MARK: - Private - Message Windows
 
     private func updateMessageWindow(for session: SessionState) {
-        let needsMessage = BlobColors.needsAttention(for: session.status)
+        let needsMessage = SpriteColors.needsAttention(for: session.status)
 
         // Check if user dismissed this message for this status
         if let dismissedStatus = dismissedMessages[session.id] {
@@ -408,7 +408,7 @@ final class BlobCoordinator: ObservableObject {
     }
 
     private func createMessageWindow(for session: SessionState) {
-        guard let physics = blobPhysics[session.id] else { return }
+        guard let physics = spritePhysics[session.id] else { return }
 
         let message = messageFor(status: session.status)
         let window = MessageWindowController(
@@ -417,12 +417,12 @@ final class BlobCoordinator: ObservableObject {
             summary: session.summary,
             message: message,
             status: session.status,
-            blobPosition: physics.position
+            spritePosition: physics.position
         )
 
         window.onFocusTerminal = { [weak self] in
             Task { @MainActor in
-                await self?.handleBlobClick(sessionId: session.id)
+                await self?.handleSpriteClick(sessionId: session.id)
             }
         }
 
@@ -453,11 +453,11 @@ final class BlobCoordinator: ObservableObject {
         }
     }
 
-    /// Get bounding boxes for all active blobs (for debug overlay)
-    private func getBlobBounds() -> [BlobBounds] {
-        blobPhysics.map { id, physics in
+    /// Get bounding boxes for all active sprites (for debug overlay)
+    private func getSpriteBounds() -> [SpriteBounds] {
+        spritePhysics.map { id, physics in
             let session = sessions.first { $0.id == id }
-            return BlobBounds(
+            return SpriteBounds(
                 sessionId: id,
                 position: physics.position,
                 size: CGSize(width: 64, height: 64),
@@ -476,7 +476,7 @@ final class BlobCoordinator: ObservableObject {
         guard let displayLink = displayLink else { return }
 
         let callback: CVDisplayLinkOutputCallback = { _, _, _, _, _, userInfo -> CVReturn in
-            let coordinator = Unmanaged<BlobCoordinator>.fromOpaque(userInfo!).takeUnretainedValue()
+            let coordinator = Unmanaged<SpriteCoordinator>.fromOpaque(userInfo!).takeUnretainedValue()
 
             // Skip frame if previous frame still processing (reduces CPU when main thread is busy)
             guard !coordinator.isProcessingFrame else { return kCVReturnSuccess }
@@ -527,24 +527,24 @@ final class BlobCoordinator: ObservableObject {
         let ledges = windowObserver.getLedges()
         let walls = windowObserver.getWalls()
 
-        // Collect all blob positions for avoidance behavior
-        let allBlobPositions: [String: CGPoint] = blobPhysics.mapValues { $0.position }
+        // Collect all sprite positions for avoidance behavior
+        let allSpritePositions: [String: CGPoint] = spritePhysics.mapValues { $0.position }
 
-        // Update all physics with awareness of other blobs
-        for (id, _) in blobWindows {
-            guard var physics = blobPhysics[id] else { continue }
-            let isDragging = blobDragging[id] ?? false
+        // Update all physics with awareness of other sprites
+        for (id, _) in spriteWindows {
+            guard var physics = spritePhysics[id] else { continue }
+            let isDragging = spriteDragging[id] ?? false
 
             if !isDragging {
-                // Get the screen containing this blob
-                guard let blobScreen = screenContaining(physics.position) else { continue }
-                let screenBounds = blobScreen.visibleFrame
+                // Get the screen containing this sprite
+                guard let spriteScreen = screenContaining(physics.position) else { continue }
+                let screenBounds = spriteScreen.visibleFrame
 
-                // Get positions of other blobs (exclude self)
-                let otherPositions = allBlobPositions.filter { $0.key != id }.map { $0.value }
+                // Get positions of other sprites (exclude self)
+                let otherPositions = allSpritePositions.filter { $0.key != id }.map { $0.value }
 
                 // Check if hovered or has message window
-                let isHovered = blobHovered[id] ?? false
+                let isHovered = spriteHovered[id] ?? false
                 let hasMessageWindow = messageWindows[id] != nil
 
                 // Don't wander when working, waiting for user, hovered, or showing message
@@ -562,18 +562,18 @@ final class BlobCoordinator: ObservableObject {
                 }
 
                 physics.groundY = screenBounds.minY
-                physics.update(deltaTime: CGFloat(deltaTime), screenBounds: screenBounds, ledges: ledges, walls: walls, otherBlobs: otherPositions, shouldWander: shouldWander)
-                blobPhysics[id] = physics
+                physics.update(deltaTime: CGFloat(deltaTime), screenBounds: screenBounds, ledges: ledges, walls: walls, otherSprites: otherPositions, shouldWander: shouldWander)
+                spritePhysics[id] = physics
             }
         }
 
         // Third pass: update animators and windows
-        for (id, window) in blobWindows {
-            guard let physics = blobPhysics[id],
-                  var animator = blobAnimators[id] else { continue }
+        for (id, window) in spriteWindows {
+            guard let physics = spritePhysics[id],
+                  var animator = spriteAnimators[id] else { continue }
 
-            let isHovered = blobHovered[id] ?? false
-            let isDragging = blobDragging[id] ?? false
+            let isHovered = spriteHovered[id] ?? false
+            let isDragging = spriteDragging[id] ?? false
             let hasMessageWindow = messageWindows[id] != nil
 
             // Get session status (session info is updated in updateSessions, not here)
@@ -592,10 +592,10 @@ final class BlobCoordinator: ObservableObject {
                 isClimbing: physics.isClimbing,
                 verticalVelocity: physics.velocity.y
             )
-            blobAnimators[id] = animator
+            spriteAnimators[id] = animator
 
             // Get hue rotation and surface rotation
-            let hueRotation = blobHueRotations[id] ?? 0
+            let hueRotation = spriteHueRotations[id] ?? 0
             let surfaceRotation = physics.surfaceRotation
 
             // Update window
@@ -613,7 +613,7 @@ final class BlobCoordinator: ObservableObject {
                 let hasMessage = messageWindows[id] != nil
                 window.hasMessageWindow = hasMessage
                 if let messageWindow = messageWindows[id] {
-                    messageWindow.updatePosition(blobPosition: physics.position)
+                    messageWindow.updatePosition(spritePosition: physics.position)
                 }
             }
         }

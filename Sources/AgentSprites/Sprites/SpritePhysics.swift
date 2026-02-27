@@ -1,8 +1,8 @@
 import Foundation
 import CoreGraphics
 
-/// Surface type the blob is currently on
-enum BlobSurface: Sendable, Equatable {
+/// Surface type the sprite is currently on
+enum SpriteSurface: Sendable, Equatable {
     case floor           // Walking on ground (screen bottom)
     case ledge           // Walking on window top
     case leftWall        // Climbing left screen edge
@@ -12,14 +12,14 @@ enum BlobSurface: Sendable, Equatable {
     case falling         // Not on any surface
 }
 
-/// Physics simulation for slime sprites with gravity and ledge support
-struct SlimePhysics: Sendable {
+/// Physics simulation for sprites with gravity and ledge support
+struct SpritePhysics: Sendable {
     var position: CGPoint
     var velocity: CGPoint = .zero
     var groundY: CGFloat
 
     // Surface tracking
-    var currentSurface: BlobSurface = .falling
+    var currentSurface: SpriteSurface = .falling
     var currentLedgeY: CGFloat?
     var currentLedgeMinX: CGFloat?
     var currentLedgeMaxX: CGFloat?
@@ -83,7 +83,7 @@ struct SlimePhysics: Sendable {
         velocity.x
     }
 
-    /// Returns the rotation angle for the blob sprite based on current surface
+    /// Returns the rotation angle for the sprite based on current surface
     var surfaceRotation: Double {
         switch currentSurface {
         case .leftWall:
@@ -162,16 +162,16 @@ struct SlimePhysics: Sendable {
 
     // MARK: - Physics Update
 
-    // Detection range for other blobs
-    private static let blobDetectionRange: CGFloat = 20
-    private static let blobAvoidanceChance: CGFloat = 0.7  // 70% chance to turn when blob detected ahead
+    // Detection range for other sprites
+    private static let spriteDetectionRange: CGFloat = 20
+    private static let spriteAvoidanceChance: CGFloat = 0.7  // 70% chance to turn when sprite detected ahead
 
-    mutating func update(deltaTime: CGFloat, screenBounds: CGRect, ledges: [WindowObserver.Ledge], walls: [WindowObserver.Wall] = [], otherBlobs: [CGPoint] = [], shouldWander: Bool = true) {
+    mutating func update(deltaTime: CGFloat, screenBounds: CGRect, ledges: [WindowObserver.Ledge], walls: [WindowObserver.Wall] = [], otherSprites: [CGPoint] = [], shouldWander: Bool = true) {
         guard !isDragging else { return }
 
-        // Check if another blob is ahead and maybe change direction
+        // Check if another sprite is ahead and maybe change direction
         if shouldWander {
-            checkForBlobsAhead(otherBlobs: otherBlobs, screenBounds: screenBounds, ledges: ledges)
+            checkForSpritesAhead(otherSprites: otherSprites, screenBounds: screenBounds, ledges: ledges)
         }
 
         switch currentSurface {
@@ -189,8 +189,8 @@ struct SlimePhysics: Sendable {
     }
 
     // swiftlint:disable:next cyclomatic_complexity
-    private mutating func checkForBlobsAhead(otherBlobs: [CGPoint], screenBounds: CGRect, ledges: [WindowObserver.Ledge]) {
-        guard !otherBlobs.isEmpty else { return }
+    private mutating func checkForSpritesAhead(otherSprites: [CGPoint], screenBounds: CGRect, ledges: [WindowObserver.Ledge]) {
+        guard !otherSprites.isEmpty else { return }
 
         // Only check when actively moving toward a target
         let movingRight = velocity.x > 2
@@ -200,35 +200,35 @@ struct SlimePhysics: Sendable {
 
         guard movingRight || movingLeft || movingUp || movingDown else { return }
 
-        for otherPos in otherBlobs {
+        for otherPos in otherSprites {
             let dx = otherPos.x - position.x
             let dy = otherPos.y - position.y
             let distance = sqrt(dx * dx + dy * dy)
 
             // Skip if too far
-            guard distance < Self.blobDetectionRange else { continue }
+            guard distance < Self.spriteDetectionRange else { continue }
 
-            // Check if the other blob is ahead of us in our movement direction
+            // Check if the other sprite is ahead of us in our movement direction
             var isAhead = false
 
             switch currentSurface {
             case .floor, .ledge, .ceiling:
-                // Horizontal movement - check if blob is ahead horizontally and at similar height
+                // Horizontal movement - check if sprite is ahead horizontally and at similar height
                 let similarHeight = abs(dy) < 50
                 if similarHeight {
-                    if movingRight && dx > 0 && dx < Self.blobDetectionRange {
+                    if movingRight && dx > 0 && dx < Self.spriteDetectionRange {
                         isAhead = true
-                    } else if movingLeft && dx < 0 && abs(dx) < Self.blobDetectionRange {
+                    } else if movingLeft && dx < 0 && abs(dx) < Self.spriteDetectionRange {
                         isAhead = true
                     }
                 }
             case .leftWall, .rightWall, .windowWall:
-                // Vertical movement on walls - check if blob is ahead vertically
+                // Vertical movement on walls - check if sprite is ahead vertically
                 let similarX = abs(dx) < 50
                 if similarX {
-                    if movingUp && dy > 0 && dy < Self.blobDetectionRange {
+                    if movingUp && dy > 0 && dy < Self.spriteDetectionRange {
                         isAhead = true
-                    } else if movingDown && dy < 0 && abs(dy) < Self.blobDetectionRange {
+                    } else if movingDown && dy < 0 && abs(dy) < Self.spriteDetectionRange {
                         isAhead = true
                     }
                 }
@@ -236,8 +236,8 @@ struct SlimePhysics: Sendable {
                 break  // Don't change direction while falling
             }
 
-            if isAhead && CGFloat.random(in: 0...1) < Self.blobAvoidanceChance {
-                // Change direction - pick a new target away from this blob
+            if isAhead && CGFloat.random(in: 0...1) < Self.spriteAvoidanceChance {
+                // Change direction - pick a new target away from this sprite
                 pickTargetAwayFrom(otherPos, screenBounds: screenBounds, ledges: ledges)
                 return
             }
@@ -251,10 +251,10 @@ struct SlimePhysics: Sendable {
         case .floor:
             // Pick target on opposite side
             if dx > 0 {
-                // Other blob is to the right, go left
+                // Other sprite is to the right, go left
                 targetPosition = CGFloat.random(in: (screenBounds.minX + 60)...(position.x - 20))
             } else {
-                // Other blob is to the left, go right
+                // Other sprite is to the left, go right
                 targetPosition = CGFloat.random(in: (position.x + 20)...(screenBounds.maxX - 60))
             }
         case .ledge:
@@ -275,10 +275,10 @@ struct SlimePhysics: Sendable {
         case .leftWall, .rightWall, .windowWall:
             let dy = avoidPos.y - position.y
             if dy > 0 {
-                // Other blob is above, go down
+                // Other sprite is above, go down
                 targetPosition = CGFloat.random(in: (groundY + 50)...(position.y - 20))
             } else {
-                // Other blob is below, go up
+                // Other sprite is below, go up
                 targetPosition = CGFloat.random(in: (position.y + 20)...(screenBounds.maxY - 100))
             }
         case .falling:

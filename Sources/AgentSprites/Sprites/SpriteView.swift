@@ -3,10 +3,10 @@ import AppKit
 import AgentSpritesCore
 import os.log
 
-private let logger = Logger(subsystem: "com.agentsprites.app", category: "BlobView")
+private let logger = Logger(subsystem: "com.agentsprites.app", category: "SpriteView")
 
-/// SwiftUI view rendering a slime sprite
-struct BlobView: View {
+/// SwiftUI view rendering a character sprite
+struct SpriteView: View {
     let image: NSImage?
     let facingRight: Bool
     let size: CGSize
@@ -27,7 +27,7 @@ struct BlobView: View {
                     // Don't render anything if sprite failed to load - likely a timing issue
                     Color.clear
                         .onAppear {
-                            logger.warning("BlobView rendered with nil image - sprite may still be loading")
+                            logger.warning("SpriteView rendered with nil image - sprite may still be loading")
                         }
                 }
             }
@@ -38,9 +38,9 @@ struct BlobView: View {
 
 #Preview {
     HStack(spacing: 20) {
-        BlobView(image: CharacterManager.shared.character(forIndex: 0)?.animation(for: "idle")?.frame(at: 0), facingRight: true, size: CGSize(width: 64, height: 64))
-        BlobView(image: CharacterManager.shared.character(forIndex: 0)?.animation(for: "working")?.frame(at: 0), facingRight: false, size: CGSize(width: 64, height: 64))
-        BlobView(image: nil, facingRight: true, size: CGSize(width: 64, height: 64))
+        SpriteView(image: CharacterManager.shared.character(forIndex: 0)?.animation(for: "idle")?.frame(at: 0), facingRight: true, size: CGSize(width: 64, height: 64))
+        SpriteView(image: CharacterManager.shared.character(forIndex: 0)?.animation(for: "working")?.frame(at: 0), facingRight: false, size: CGSize(width: 64, height: 64))
+        SpriteView(image: nil, facingRight: true, size: CGSize(width: 64, height: 64))
     }
     .padding()
     .background(Color.black)
