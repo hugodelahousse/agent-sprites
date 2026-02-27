@@ -125,6 +125,7 @@ struct SessionRowView: View {
 }
 
 /// Animated character indicator for session rows
+@MainActor
 struct SessionCharacterIndicator: View {
     let workingDirectory: String
     let status: SessionStatus

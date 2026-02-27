@@ -44,7 +44,7 @@ enum ConflictResolution {
 
 struct ImportPackView: View {
     @Environment(\.dismiss) private var dismiss
-    let onImportComplete: (String) -> Void
+    let onImportComplete: @MainActor (String) -> Void
 
     @State private var importState: ImportState = .selectFile
     @State private var validationResult: PackValidationResult?

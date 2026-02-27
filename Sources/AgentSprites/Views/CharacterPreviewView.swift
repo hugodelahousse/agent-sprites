@@ -47,6 +47,7 @@ struct CharacterPreviewView: View {
 }
 
 /// Grid of character previews for a pack
+@MainActor
 struct CharacterPreviewGrid: View {
     let pack: CharacterPack
     let state: String
