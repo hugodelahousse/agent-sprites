@@ -134,6 +134,8 @@ final class SpriteCoordinator: ObservableObject {
         for session in currentSessions {
             createSprite(for: session)
         }
+        // Restart animation loop (it was stopped when sprites were removed)
+        updateAnimationState()
         logger.info("Reloaded all sprites with new character pack: \(self.selectedPackId, privacy: .public)")
     }
 

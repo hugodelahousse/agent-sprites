@@ -52,6 +52,12 @@ if [ -d "$SLIME_PACK" ]; then
     echo "  - Bundled pack: slime"
 fi
 
+# Copy app icons
+# AppIcon.icon (macOS 15+) and AppIcon.icns (fallback for older versions)
+cp -r "$SCRIPT_DIR/AppIcon.icon" "$RESOURCES/"
+cp "$SCRIPT_DIR/AppIcon.icns" "$RESOURCES/"
+echo "  - App icons: AppIcon.icon, AppIcon.icns"
+
 # Create Info.plist
 cat > "$CONTENTS/Info.plist" << 'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -78,6 +84,10 @@ cat > "$CONTENTS/Info.plist" << 'EOF'
     <true/>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>CFBundleIconName</key>
+    <string>AppIcon</string>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.utilities</string>
 </dict>
