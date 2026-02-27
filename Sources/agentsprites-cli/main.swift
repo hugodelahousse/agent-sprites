@@ -363,7 +363,8 @@ func runBackgroundUpdate(hookEventJSON: String) {
         tty: tty,
         bundleId: bundleId,
         summary: summary,
-        gitBranch: gitBranch
+        gitBranch: gitBranch,
+        isMetadataUpdate: true  // Don't trigger state transitions
     )
     postSessionEvent(event)
 }

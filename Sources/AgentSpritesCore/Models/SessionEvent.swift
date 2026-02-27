@@ -11,6 +11,8 @@ public struct SessionEvent: Codable, Sendable {
     public let summary: String?
     public let gitBranch: String?
     public let notificationType: String?
+    /// If true, this is a metadata-only update (from background process) that should not trigger state transitions
+    public let isMetadataUpdate: Bool
 
     public init(
         sessionId: String,
@@ -20,7 +22,8 @@ public struct SessionEvent: Codable, Sendable {
         bundleId: String? = nil,
         summary: String? = nil,
         gitBranch: String? = nil,
-        notificationType: String? = nil
+        notificationType: String? = nil,
+        isMetadataUpdate: Bool = false
     ) {
         self.sessionId = sessionId
         self.eventName = eventName
@@ -30,10 +33,11 @@ public struct SessionEvent: Codable, Sendable {
         self.summary = summary
         self.gitBranch = gitBranch
         self.notificationType = notificationType
+        self.isMetadataUpdate = isMetadataUpdate
     }
 
     /// Create a SessionEvent from a HookEvent
-    public init(from hookEvent: HookEvent, tty: String? = nil, bundleId: String? = nil, summary: String? = nil, gitBranch: String? = nil) {
+    public init(from hookEvent: HookEvent, tty: String? = nil, bundleId: String? = nil, summary: String? = nil, gitBranch: String? = nil, isMetadataUpdate: Bool = false) {
         self.sessionId = hookEvent.sessionId
         self.eventName = hookEvent.hookEventName
         self.workingDirectory = hookEvent.cwd
@@ -42,6 +46,7 @@ public struct SessionEvent: Codable, Sendable {
         self.summary = summary
         self.gitBranch = gitBranch
         self.notificationType = hookEvent.notificationType
+        self.isMetadataUpdate = isMetadataUpdate
     }
 
     /// Encode to JSON string for notification payload

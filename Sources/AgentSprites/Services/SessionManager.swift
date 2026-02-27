@@ -24,11 +24,7 @@ actor SessionManager {
     /// Returns the updated list of sessions
     func processEvent(_ event: SessionEvent) -> [SessionState] {
         let startTime = Date()
-        logger.info("[TIMING] \(timestamp(), privacy: .public) Processing event: session=\(event.sessionId.prefix(8), privacy: .public), event=\(event.eventName, privacy: .public)")
-
-        // Cancel any pending done->idle timer for this session
-        doneTimers[event.sessionId]?.cancel()
-        doneTimers[event.sessionId] = nil
+        logger.info("[TIMING] \(timestamp(), privacy: .public) Processing event: session=\(event.sessionId.prefix(8), privacy: .public), event=\(event.eventName, privacy: .public), metadataOnly=\(event.isMetadataUpdate, privacy: .public)")
 
         // Check if this session was recently removed (race condition with background updates)
         if let removedAt = recentlyRemoved[event.sessionId] {
@@ -39,6 +35,24 @@ actor SessionManager {
             // Removal block expired, allow re-creation
             recentlyRemoved.removeValue(forKey: event.sessionId)
         }
+
+        // Metadata-only updates (from background process) should not affect state
+        if event.isMetadataUpdate {
+            if var session = store.sessions[event.sessionId] {
+                updateSessionMetadata(&session, with: event)
+                store.sessions[event.sessionId] = session
+                store.lastUpdated = Date()
+                let processTime = Date().timeIntervalSince(startTime) * 1000
+                logger.info("[TIMING] \(timestamp(), privacy: .public) Metadata update processed (+\(String(format: "%.1f", processTime), privacy: .public)ms)")
+            } else {
+                logger.debug("Ignoring metadata update for unknown session \(event.sessionId.prefix(8), privacy: .public)")
+            }
+            return store.activeSessions
+        }
+
+        // Cancel any pending done->idle timer for this session (only for real events)
+        doneTimers[event.sessionId]?.cancel()
+        doneTimers[event.sessionId] = nil
 
         // Get current session state (if exists) for implicit transitions
         let currentStatus = store.sessions[event.sessionId]?.status
@@ -114,6 +128,26 @@ actor SessionManager {
             session.workingDirectory = event.workingDirectory
         }
         // Update optional fields if provided (keep existing if nil)
+        if let tty = event.tty {
+            session.tty = tty
+        }
+        if let bundleId = event.bundleId {
+            session.bundleId = bundleId
+        }
+        if let summary = event.summary {
+            session.summary = summary
+        }
+        if let gitBranch = event.gitBranch {
+            session.gitBranch = gitBranch
+        }
+    }
+
+    /// Update only metadata fields without changing status (for background updates)
+    private func updateSessionMetadata(_ session: inout SessionState, with event: SessionEvent) {
+        session.lastUpdated = Date()
+        if !event.workingDirectory.isEmpty {
+            session.workingDirectory = event.workingDirectory
+        }
         if let tty = event.tty {
             session.tty = tty
         }

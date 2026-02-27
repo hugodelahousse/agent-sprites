@@ -35,8 +35,10 @@ Download the latest release from [GitHub Releases](https://github.com/anthropics
 Since the app isn't signed with an Apple Developer certificate, macOS will block it. To allow it, run:
 
 ```bash
-xattr -cr ~/Downloads/AgentSprites.app
+xattr -dr com.apple.quarantine ~/Downloads/AgentSprites.app
 ```
+
+Or go to **System Settings → Privacy & Security**, scroll down, and click **Open Anyway**.
 
 On first launch, the app will prompt to install Claude Code hooks—click **Install** and you're ready to go.
 
