@@ -16,6 +16,7 @@ final class LedgeDebugOverlay {
     private var windows: [NSWindow] = []
     private var isVisible = false
     private let windowObserver = WindowObserver.shared
+    private var updateTimer: Timer?
 
     /// Callback to get current sprite bounds from coordinator
     var getSpriteBounds: (() -> [SpriteBounds])?
@@ -59,6 +60,8 @@ final class LedgeDebugOverlay {
             window.orderOut(nil)
         }
         isVisible = false
+        updateTimer?.invalidate()
+        updateTimer = nil
     }
 
     private func createWindow(screen: NSScreen) -> NSWindow {
@@ -83,12 +86,9 @@ final class LedgeDebugOverlay {
         updateLedges()
 
         // Update every 500ms while visible
-        Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] timer in
-            Task { @MainActor in
-                guard let self = self, self.isVisible else {
-                    timer.invalidate()
-                    return
-                }
+        updateTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.isVisible else { return }
                 self.updateLedges()
             }
         }

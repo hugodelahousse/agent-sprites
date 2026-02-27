@@ -188,7 +188,7 @@ final class SessionViewModel: ObservableObject {
         // Set up callback for internal state changes (like done->idle transitions)
         Task {
             await sessionManager.setChangeCallback { [weak self] sessions in
-                Task { @MainActor in
+                Task { @MainActor [weak self] in
                     self?.sessions = sessions
                 }
             }
@@ -202,9 +202,10 @@ final class SessionViewModel: ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] notification in
-            guard let self else { return }
-            Task { @MainActor in
-                self.handleSessionEvent(notification)
+            // Extract userInfo before entering async context (Notification is not Sendable)
+            let userInfo = notification.userInfo
+            Task { @MainActor [weak self] in
+                self?.handleSessionEvent(userInfo: userInfo)
             }
         }
 
@@ -214,18 +215,19 @@ final class SessionViewModel: ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] notification in
-            guard let self else { return }
-            Task { @MainActor in
-                self.handleSessionEnd(notification)
+            // Extract userInfo before entering async context (Notification is not Sendable)
+            let userInfo = notification.userInfo
+            Task { @MainActor [weak self] in
+                self?.handleSessionEnd(userInfo: userInfo)
             }
         }
     }
 
-    private func handleSessionEvent(_ notification: Notification) {
+    private func handleSessionEvent(userInfo: [AnyHashable: Any]?) {
         let startTime = Date()
         logger.info("[TIMING] \(timestamp(), privacy: .public) App received session event notification")
 
-        guard let userInfo = notification.userInfo,
+        guard let userInfo,
               let eventJSON = userInfo["eventJSON"] as? String,
               let event = SessionEvent.fromJSONString(eventJSON) else {
             logger.warning("Failed to parse session event from notification")
@@ -241,10 +243,10 @@ final class SessionViewModel: ObservableObject {
         }
     }
 
-    private func handleSessionEnd(_ notification: Notification) {
+    private func handleSessionEnd(userInfo: [AnyHashable: Any]?) {
         logger.info("[TIMING] \(timestamp(), privacy: .public) App received session end notification")
 
-        guard let userInfo = notification.userInfo,
+        guard let userInfo,
               let sessionId = userInfo["sessionId"] as? String else {
             logger.warning("Failed to parse session ID from end notification")
             return
