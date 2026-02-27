@@ -1,7 +1,29 @@
 import AppKit
+import os
 import SwiftUI
 import AgentSpritesCore
 import os.log
+
+/// Thread-safe boolean flag for cross-thread synchronization (e.g. CVDisplayLink callback → main thread)
+private final class AtomicBool: @unchecked Sendable {
+    private var lock = os_unfair_lock()
+    private var _value: Bool
+
+    init(_ value: Bool) { _value = value }
+
+    var value: Bool {
+        get {
+            os_unfair_lock_lock(&lock)
+            defer { os_unfair_lock_unlock(&lock) }
+            return _value
+        }
+        set {
+            os_unfair_lock_lock(&lock)
+            _value = newValue
+            os_unfair_lock_unlock(&lock)
+        }
+    }
+}
 
 private func timestamp() -> String {
     let now = Date()
@@ -64,7 +86,7 @@ final class SpriteCoordinator: ObservableObject {
     private var lastFrameTime: CFTimeInterval = 0
     private var sessions: [SessionState] = []
     private var pendingRenderTime: Date?  // Track when session update happened, for timing logs
-    private nonisolated(unsafe) var isProcessingFrame = false  // Skip frames when main thread is busy
+    private let isProcessingFrame = AtomicBool(false)  // Thread-safe flag: CVDisplayLink reads, main thread writes
 
     private let terminalFocuser = TerminalFocuser()
     private let windowObserver = WindowObserver.shared
@@ -481,7 +503,7 @@ final class SpriteCoordinator: ObservableObject {
             let coordinator = Unmanaged<SpriteCoordinator>.fromOpaque(userInfo!).takeUnretainedValue()
 
             // Skip frame if previous frame still processing (reduces CPU when main thread is busy)
-            guard !coordinator.isProcessingFrame else { return kCVReturnSuccess }
+            guard !coordinator.isProcessingFrame.value else { return kCVReturnSuccess }
 
             DispatchQueue.main.async {
                 coordinator.animationFrame()
@@ -511,8 +533,8 @@ final class SpriteCoordinator: ObservableObject {
     private func animationFrame() {
         guard isEnabled else { return }
 
-        isProcessingFrame = true
-        defer { isProcessingFrame = false }
+        isProcessingFrame.value = true
+        defer { isProcessingFrame.value = false }
 
         // Log time from session update to render
         if let pendingTime = pendingRenderTime {

@@ -178,6 +178,7 @@ struct CharacterPack: Identifiable, Hashable {
 // MARK: - Character Manager
 
 /// Manages loading and providing characters
+@MainActor
 final class CharacterManager {
     static let shared = CharacterManager()
 
