@@ -21,8 +21,7 @@ actor SessionManager {
     private let removalBlockDuration: TimeInterval = 10.0
 
     /// Process a session event from CLI notification
-    /// Returns the updated list of sessions
-    func processEvent(_ event: SessionEvent) -> [SessionState] {
+    func processEvent(_ event: SessionEvent) {
         let startTime = Date()
         logger.info("[TIMING] \(timestamp(), privacy: .public) Processing event: session=\(event.sessionId.prefix(8), privacy: .public), event=\(event.eventName, privacy: .public), metadataOnly=\(event.isMetadataUpdate, privacy: .public)")
 
@@ -30,7 +29,7 @@ actor SessionManager {
         if let removedAt = recentlyRemoved[event.sessionId] {
             if Date().timeIntervalSince(removedAt) < removalBlockDuration {
                 logger.info("[TIMING] \(timestamp(), privacy: .public) Ignoring event for recently-removed session \(event.sessionId.prefix(8), privacy: .public)")
-                return store.activeSessions
+                return
             }
             // Removal block expired, allow re-creation
             recentlyRemoved.removeValue(forKey: event.sessionId)
@@ -44,10 +43,11 @@ actor SessionManager {
                 store.lastUpdated = Date()
                 let processTime = Date().timeIntervalSince(startTime) * 1000
                 logger.info("[TIMING] \(timestamp(), privacy: .public) Metadata update processed (+\(String(format: "%.1f", processTime), privacy: .public)ms)")
+                changeCallback?(store.activeSessions)
             } else {
                 logger.debug("Ignoring metadata update for unknown session \(event.sessionId.prefix(8), privacy: .public)")
             }
-            return store.activeSessions
+            return
         }
 
         // Cancel any pending done->idle timer for this session (only for real events)
@@ -79,12 +79,11 @@ actor SessionManager {
             scheduleDoneToIdle(sessionId: event.sessionId)
         }
 
-        return store.activeSessions
+        changeCallback?(store.activeSessions)
     }
 
     /// Handle session end (removal)
-    /// Returns the updated list of sessions
-    func removeSession(sessionId: String) -> [SessionState] {
+    func removeSession(sessionId: String) {
         let startTime = Date()
         logger.info("[TIMING] \(timestamp(), privacy: .public) Removing session: \(sessionId.prefix(8), privacy: .public)")
 
@@ -102,7 +101,7 @@ actor SessionManager {
         let processTime = Date().timeIntervalSince(startTime) * 1000
         logger.info("[TIMING] \(timestamp(), privacy: .public) Session removed (+\(String(format: "%.1f", processTime), privacy: .public)ms)")
 
-        return store.activeSessions
+        changeCallback?(store.activeSessions)
     }
 
     /// Get all current sessions

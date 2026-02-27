@@ -4,6 +4,9 @@ import AgentSpritesCore
 struct SessionRowView: View {
     let session: SessionState
     var onTap: (() -> Void)?
+    var onClose: (() -> Void)?
+
+    @State private var isHovering = false
 
     var body: some View {
         HStack(spacing: 12) {
@@ -40,10 +43,20 @@ struct SessionRowView: View {
 
             Spacer()
 
-            // Time since last update
-            Text(timeAgo(from: session.lastUpdated))
-                .font(.caption2)
-                .foregroundColor(.secondary)
+            // Close button on hover, time ago otherwise
+            if isHovering {
+                Button(action: { onClose?() }) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Close session")
+            } else {
+                Text(timeAgo(from: session.lastUpdated))
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
@@ -52,6 +65,9 @@ struct SessionRowView: View {
                 .fill(Color.primary.opacity(0.05))
         )
         .contentShape(Rectangle())
+        .onHover { hovering in
+            isHovering = hovering
+        }
         .onTapGesture {
             onTap?()
         }

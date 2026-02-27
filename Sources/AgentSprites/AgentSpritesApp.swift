@@ -238,8 +238,7 @@ final class SessionViewModel: ObservableObject {
         logger.info("[TIMING] \(timestamp(), privacy: .public) Event parsed (+\(String(format: "%.1f", parseTime), privacy: .public)ms), processing...")
 
         Task {
-            let updatedSessions = await sessionManager.processEvent(event)
-            self.sessions = updatedSessions
+            await sessionManager.processEvent(event)
         }
     }
 
@@ -253,8 +252,7 @@ final class SessionViewModel: ObservableObject {
         }
 
         Task {
-            let updatedSessions = await sessionManager.removeSession(sessionId: sessionId)
-            self.sessions = updatedSessions
+            await sessionManager.removeSession(sessionId: sessionId)
         }
     }
 
@@ -263,6 +261,14 @@ final class SessionViewModel: ObservableObject {
         logger.debug("focusSession called for: \(session.displayName)")
         Task {
             await terminalFocuser.focusSession(session)
+        }
+    }
+
+    /// Manually close/remove a session from the UI
+    func closeSession(_ session: SessionState) {
+        logger.info("Manually closing session: \(session.id.prefix(8), privacy: .public)")
+        Task {
+            await sessionManager.removeSession(sessionId: session.id)
         }
     }
 }

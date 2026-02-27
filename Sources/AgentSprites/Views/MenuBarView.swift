@@ -68,9 +68,11 @@ struct MenuBarView: View {
                 ScrollView {
                     LazyVStack(spacing: 4) {
                         ForEach(viewModel.sessions) { session in
-                            SessionRowView(session: session) {
-                                viewModel.focusSession(session)
-                            }
+                            SessionRowView(
+                                session: session,
+                                onTap: { viewModel.focusSession(session) },
+                                onClose: { viewModel.closeSession(session) }
+                            )
                         }
                     }
                     .padding(.horizontal, 8)
