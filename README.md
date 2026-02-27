@@ -1,8 +1,114 @@
-# AgentSprites
+<p align="center">
+  <img src="Resources/AppIcon.icon/Assets/pixel_characters_2_scaled.png" width="200" alt="AgentSprites">
+</p>
 
-A macOS menu bar app for monitoring Claude Code instances with "desktop pet" style creatures called Sprites.
+<h1 align="center">AgentSprites</h1>
 
-## Architecture
+<p align="center">
+  <strong>Desktop pets that show you what Claude Code is doing</strong>
+</p>
+
+<p align="center">
+  Animated pixel art companions that live on your screen and react to your Claude Code sessions in real-time.
+</p>
+
+---
+
+## What is AgentSprites?
+
+AgentSprites is a macOS menu bar app that gives you adorable animated companions to monitor your [Claude Code](https://github.com/anthropics/claude-code) sessions. Each sprite walks along your screen and changes behavior based on what Claude is doing—working, waiting for input, requesting permissions, or finished with a task.
+
+Think of it as a "desktop pet" that keeps you informed at a glance, without interrupting your flow.
+
+## Features
+
+- **Real-time status** — Sprites visually react to Claude Code's current state
+- **Multiple sessions** — Each Claude Code instance gets its own sprite
+- **Custom characters** — Create your own character packs with any pixel art
+- **Lightweight** — Native Swift app with minimal CPU/memory footprint
+- **One-click setup** — Automatic hook installation, no manual configuration
+
+## Installation
+
+Download the latest release from [GitHub Releases](https://github.com/anthropics/agent-sprites/releases) and open `AgentSprites.app`. On first launch, the app will prompt to install Claude Code hooks—click **Install** and you're ready to go.
+
+Requires macOS 13+ and [Claude Code](https://github.com/anthropics/claude-code).
+
+## Session States
+
+Your sprite changes animation based on what Claude is doing:
+
+<table>
+<tr>
+<td align="center"><img src="assets/slime_idle.gif" width="64"><br><b>Idle</b></td>
+<td align="center"><img src="assets/slime_jump.gif" width="64"><br><b>Working</b></td>
+<td align="center"><img src="assets/slime_walk.gif" width="64"><br><b>Moving</b></td>
+<td align="center"><img src="assets/slime_run_attack.gif" width="64"><br><b>Waiting for Input</b></td>
+<td align="center"><img src="assets/slime_dead.gif" width="64"><br><b>Waiting for Permission</b></td>
+</tr>
+<tr>
+<td align="center"><img src="assets/slime_dead.gif" width="64"><br><b>Error</b></td>
+<td align="center"><img src="assets/slime_idle.gif" width="64"><br><b>Done</b></td>
+<td align="center"><img src="assets/slime_attack3.gif" width="64"><br><b>Dragging</b></td>
+<td align="center"><img src="assets/slime_jump.gif" width="64"><br><b>Falling</b></td>
+<td></td>
+</tr>
+</table>
+
+## Custom Character Packs
+
+AgentSprites comes with a built-in slime character, but the real fun is creating your own!
+
+### Pack Modes
+
+When you run multiple Claude Code sessions, each gets its own sprite. AgentSprites supports two modes for differentiating them:
+
+- **Hue Rotation** — Single-character packs (like the built-in slime) automatically give each session a unique color by rotating the hue. Great for simple packs with one character.
+
+- **Character Rotation** — Multi-character packs assign a different character to each session. Perfect for packs with multiple distinct sprites (e.g., a set of different creatures).
+
+The mode is determined automatically based on your pack structure: use `character.json` for hue rotation, or multiple `{name}.json` files for character rotation.
+
+### Creating a Character Pack
+
+1. Create a folder in `~/Library/Application Support/AgentSprites/Characters/`
+2. Add your sprite sheet PNGs (horizontal strips of animation frames)
+3. Create a `character.json` describing your animations
+
+Example `character.json`:
+
+```json
+{
+  "id": "my_character",
+  "name": "My Character",
+  "frameSize": [64, 64],
+  "scale": 2.0,
+  "defaultFps": 8,
+  "animations": {
+    "idle": { "file": "idle.png", "frames": 8 },
+    "walk": { "file": "walk.png", "frames": 8 },
+    "hurt": { "file": "hurt.png", "frames": 6 },
+    "attack": { "file": "attack.png", "frames": 4 }
+  },
+  "states": {
+    "idle": "idle",
+    "working": "walk",
+    "moving": "walk",
+    "waitingForInput": "idle",
+    "waitingForPermission": "hurt",
+    "error": "hurt",
+    "done": "attack",
+    "dragging": "walk",
+    "falling": "idle"
+  }
+}
+```
+
+See `CharacterPacks/README.md` for the full format specification.
+
+## How It Works
+
+AgentSprites uses Claude Code's [hooks system](https://docs.anthropic.com/en/docs/claude-code/hooks) to receive events:
 
 ```
 ┌─────────────────┐     stdin JSON       ┌─────────────────┐
@@ -18,67 +124,23 @@ A macOS menu bar app for monitoring Claude Code instances with "desktop pet" sty
                                          └─────────────────┘
 ```
 
-## Components
+The CLI is bundled inside the app—no separate installation needed.
 
-- **AgentSpritesCore**: Shared library with models (SessionState, SessionEvent, HookEvent)
-- **agentsprites-cli**: Hook handler called by Claude Code, posts Distributed Notifications
-- **AgentSprites.app**: SwiftUI menu bar app that receives notifications and displays sprites
-
-## Building
+## Development
 
 ```bash
-# Build all targets
-swift build
+# Build
+make build
 
-# Bundle as .app
-make bundle
+# Run (builds, bundles, and opens)
+make run
 
-# Build release
-make release
-```
+# Lint & format
+make lint
+make format
 
-## Installation
-
-```bash
-# Full install (builds release, installs to /Applications)
-make install
-```
-
-This will:
-1. Build release binaries
-2. Bundle the .app with embedded CLI
-3. Install to `/Applications/AgentSprites.app`
-4. Install character packs to `~/Library/Application Support/AgentSprites/Characters/`
-
-On first launch, the app will prompt to install Claude Code hooks.
-
-## Data Storage
-
-All app data is stored in the standard macOS location:
-```
-~/Library/Application Support/AgentSprites/
-└── Characters/          # Character packs (sprites)
-    ├── slime/
-    ├── pokemon/
-    └── ...
-```
-
-## Session States
-
-| Status | Trigger Event | Visual |
-|--------|---------------|--------|
-| idle | SessionStart, 5s after done | Gray |
-| working | UserPromptSubmit | Blue |
-| waitingForInput | Notification (elicitation) | Yellow |
-| waitingForPermission | PermissionRequest | Red |
-| error | PostToolUseFailure | Red |
-| done | Stop | Green |
-
-## Manual Testing
-
-```bash
-# Test CLI with mock hook event
-echo '{"hook_event_name":"SessionStart","session_id":"test-123","cwd":"/tmp"}' | .build/debug/AgentSprites.app/Contents/Helpers/agentsprites-cli
+# Run tests
+swift test
 ```
 
 ## License

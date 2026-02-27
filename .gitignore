@@ -50,5 +50,6 @@ scripts/
 # Character packs (keep only slime)
 CharacterPacks/*
 !CharacterPacks/slime/
+!CharacterPacks/CLAUDE.md
+!CharacterPacks/README.md
 CharacterPacks/*.json
-CharacterPacks/*.md
