@@ -20,20 +20,14 @@ let package = Package(
         .target(
             name: "AgentSpritesCore",
             dependencies: [],
-            path: "Sources/AgentSpritesCore",
-            plugins: [
-                .plugin(name: "SwiftLintBuildToolPlugin", package: "SwiftLint"),
-            ]
+            path: "Sources/AgentSpritesCore"
         ),
 
         // CLI (called by Claude Code hooks)
         .executableTarget(
             name: "agentsprites-cli",
             dependencies: ["AgentSpritesCore"],
-            path: "Sources/agentsprites-cli",
-            plugins: [
-                .plugin(name: "SwiftLintBuildToolPlugin", package: "SwiftLint"),
-            ]
+            path: "Sources/agentsprites-cli"
         ),
 
         // SwiftUI Menu Bar App
@@ -43,9 +37,6 @@ let package = Package(
             path: "Sources/AgentSprites",
             resources: [
                 .process("Resources")
-            ],
-            plugins: [
-                .plugin(name: "SwiftLintBuildToolPlugin", package: "SwiftLint"),
             ]
         ),
 
