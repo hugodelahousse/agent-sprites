@@ -7,32 +7,53 @@
   "animations": {
     "idle": {
       "file": "slime_idle.png",
-      "frames": 4
+      "frames": 8
     },
     "walk": {
       "file": "slime_walk.png",
-      "frames": 6
+      "frames": 8
     },
-    "hurt": {
-      "file": "slime_hurt.png",
-      "frames": 4,
+    "jump": {
+      "file": "slime_jump.png",
+      "frames": 13,
+      "fps": 12
+    },
+    "run_attack": {
+      "file": "slime_run_attack.png",
+      "frames": 10,
+      "fps": 12
+    },
+    "attack3": {
+      "file": "slime_attack3.png",
+      "frames": 5,
+      "fps": 10
+    },
+    "dead": {
+      "file": "slime_dead.png",
+      "frames": 3,
+      "fps": 6,
       "loop": false
     },
-    "attack": {
-      "file": "slime_attack.png",
-      "frames": 5,
-      "fps": 15
+    "attack1": {
+      "file": "slime_attack1.png",
+      "frames": 4,
+      "fps": 10
+    },
+    "attack2": {
+      "file": "slime_attack2.png",
+      "frames": 4,
+      "fps": 10
     }
   },
   "states": {
     "idle": "idle",
-    "working": "walk",
+    "working": "jump",
     "moving": "walk",
-    "waitingForInput": "idle",
-    "waitingForPermission": "idle",
-    "error": "hurt",
-    "done": "idle",
-    "dragging": "attack",
-    "falling": "attack"
+    "waitingForInput": "run_attack",
+    "waitingForPermission": "dead",
+    "error": "dead",
+    "done": "attack2",
+    "dragging": "attack3",
+    "falling": "attack1"
   }
 }

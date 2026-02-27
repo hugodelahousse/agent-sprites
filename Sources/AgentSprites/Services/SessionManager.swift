@@ -40,8 +40,11 @@ actor SessionManager {
             recentlyRemoved.removeValue(forKey: event.sessionId)
         }
 
-        // Determine the new status
-        let status = determineStatus(for: event.eventName, notificationType: event.notificationType)
+        // Get current session state (if exists) for implicit transitions
+        let currentStatus = store.sessions[event.sessionId]?.status
+
+        // Determine the new status, considering implicit transitions
+        let status = determineStatus(for: event.eventName, notificationType: event.notificationType, currentStatus: currentStatus)
 
         // Update or create the session
         if var session = store.sessions[event.sessionId] {
@@ -139,7 +142,30 @@ actor SessionManager {
         )
     }
 
-    private func determineStatus(for eventName: String, notificationType: String?) -> SessionStatus {
+    private func determineStatus(for eventName: String, notificationType: String?, currentStatus: SessionStatus?) -> SessionStatus {
+        // Handle implicit permission-granted transition:
+        // If we were waiting for permission and receive any event that's not
+        // another PermissionRequest, permission_prompt notification, Stop, or SessionEnd,
+        // then permission was granted → working
+        if currentStatus == .waitingForPermission {
+            switch eventName {
+            case "PermissionRequest":
+                return .waitingForPermission
+            case "Notification" where notificationType == "permission_prompt":
+                return .waitingForPermission
+            case "Stop":
+                return .done
+            case "SessionEnd":
+                // Will be handled by removeSession, but just in case
+                return .done
+            default:
+                // Any other event means permission was granted
+                logger.debug("Implicit permission granted: \(eventName, privacy: .public)")
+                return .working
+            }
+        }
+
+        // Normal status determination
         switch eventName {
         case "SessionStart":
             return .idle

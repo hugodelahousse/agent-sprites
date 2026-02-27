@@ -45,9 +45,16 @@ jobs:
 
       - name: Create zip archive
         run: |
-          cd .build/release
+          # Find the app bundle (handles both .build/release and .build/arm64-apple-macosx/release)
+          APP_PATH=$(find .build -name "AgentSprites.app" -type d | head -1)
+          if [ -z "$APP_PATH" ]; then
+            echo "Error: AgentSprites.app not found"
+            exit 1
+          fi
+          echo "Found app at: $APP_PATH"
+          cd "$(dirname "$APP_PATH")"
           zip -r AgentSprites-${{ steps.version.outputs.VERSION }}.zip AgentSprites.app
-          mv AgentSprites-${{ steps.version.outputs.VERSION }}.zip ../../
+          mv AgentSprites-${{ steps.version.outputs.VERSION }}.zip "$GITHUB_WORKSPACE/"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

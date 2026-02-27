@@ -27,7 +27,7 @@ enum HookInstaller {
         "PermissionRequest",
         "SubagentStart",
         "SubagentStop",
-        "PostToolUse",
+        // PostToolUse removed - too noisy, we infer permission granted from subsequent events
         "PostToolUseFailure",
         "PreCompact"
     ]
