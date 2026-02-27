@@ -9,10 +9,23 @@ struct SessionRowView: View {
     @State private var isHovering = false
 
     var body: some View {
+        // Resolve character data here (body is @MainActor via View protocol)
+        let character: SpriteCharacter? = if CharacterManager.shared.usesRandomCharacter {
+            CharacterManager.shared.character(forPath: session.workingDirectory)
+        } else {
+            CharacterManager.shared.character(forIndex: 0)
+        }
+        let hueRotation: Double = if CharacterManager.shared.usesHueRotation {
+            Self.hueForPath(session.workingDirectory, seed: CharacterManager.shared.mappingSeed)
+        } else {
+            0
+        }
+
         HStack(spacing: 12) {
             // Animated character indicator
             SessionCharacterIndicator(
-                workingDirectory: session.workingDirectory,
+                character: character,
+                hueRotation: hueRotation,
                 status: session.status
             )
 
@@ -106,6 +119,14 @@ struct SessionRowView: View {
         }
     }
 
+    private static func hueForPath(_ path: String, seed: UInt64) -> Double {
+        var hash: UInt64 = 5381 ^ seed
+        for char in path.utf8 {
+            hash = ((hash << 5) &+ hash) &+ UInt64(char)
+        }
+        return Double(hash % 360)
+    }
+
     private func timeAgo(from date: Date) -> String {
         let interval = Date().timeIntervalSince(date)
 
@@ -125,30 +146,12 @@ struct SessionRowView: View {
 }
 
 /// Animated character indicator for session rows
-@MainActor
 struct SessionCharacterIndicator: View {
-    let workingDirectory: String
+    let character: SpriteCharacter?
+    let hueRotation: Double
     let status: SessionStatus
 
     @State private var currentFrame: Int = 0
-
-    private var character: SpriteCharacter? {
-        if CharacterManager.shared.usesRandomCharacter {
-            return CharacterManager.shared.character(forPath: workingDirectory)
-        } else {
-            return CharacterManager.shared.character(forIndex: 0)
-        }
-    }
-
-    private var hueRotation: Double {
-        guard CharacterManager.shared.usesHueRotation else { return 0 }
-        // Same hash algorithm as SpriteCoordinator
-        var hash: UInt64 = 5381 ^ CharacterManager.shared.mappingSeed
-        for char in workingDirectory.utf8 {
-            hash = ((hash << 5) &+ hash) &+ UInt64(char)
-        }
-        return Double(hash % 360)
-    }
 
     private var animationState: String {
         switch status {
@@ -188,7 +191,7 @@ struct SessionCharacterIndicator: View {
         .onChange(of: status) { _ in
             currentFrame = 0
         }
-        .task(id: "\(animationState)-\(workingDirectory)") {
+        .task(id: "\(animationState)-\(character?.id ?? "")") {
             guard let character else { return }
             let animation = character.animation(for: animationState)
             let fps = animation?.fps ?? 10

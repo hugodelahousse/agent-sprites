@@ -47,14 +47,14 @@ struct CharacterPreviewView: View {
 }
 
 /// Grid of character previews for a pack
-@MainActor
 struct CharacterPreviewGrid: View {
-    let pack: CharacterPack
+    let characters: [SpriteCharacter]
+    let isSingleCharacter: Bool
     let state: String
     let previewSize: CGFloat = 64
 
     var body: some View {
-        if pack.isSingleCharacter {
+        if isSingleCharacter {
             // Show same character with different hue rotations
             hueRotationPreviews
         } else {
@@ -67,7 +67,7 @@ struct CharacterPreviewGrid: View {
     private var hueRotationPreviews: some View {
         let hues: [Double] = [0, 90, 180, 270]
 
-        if let character = CharacterManager.shared.character(forIndex: 0) {
+        if let character = characters.first {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: previewSize + 8))], spacing: 8) {
                 ForEach(hues, id: \.self) { hue in
                     CharacterPreviewView(
@@ -89,28 +89,24 @@ struct CharacterPreviewGrid: View {
 
     @ViewBuilder
     private var characterPreviews: some View {
-        let characterIds = CharacterManager.shared.availableCharacters
-
         ScrollView {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: previewSize + 8))], spacing: 8) {
-                ForEach(characterIds, id: \.self) { charId in
-                    if let character = CharacterManager.shared.character(byId: charId) {
-                        VStack(spacing: 4) {
-                            CharacterPreviewView(
-                                character: character,
-                                state: state,
-                                hueRotation: 0,
-                                size: previewSize
-                            )
-                            .background(Color.black.opacity(0.2))
-                            .cornerRadius(8)
+                ForEach(characters, id: \.id) { character in
+                    VStack(spacing: 4) {
+                        CharacterPreviewView(
+                            character: character,
+                            state: state,
+                            hueRotation: 0,
+                            size: previewSize
+                        )
+                        .background(Color.black.opacity(0.2))
+                        .cornerRadius(8)
 
-                            Text(character.name)
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                                .lineLimit(1)
-                                .frame(width: previewSize)
-                        }
+                        Text(character.name)
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                            .frame(width: previewSize)
                     }
                 }
             }
