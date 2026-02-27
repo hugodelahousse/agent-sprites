@@ -12,6 +12,10 @@
   Animated pixel art companions that live on your screen and react to your Claude Code sessions in real-time.
 </p>
 
+<p align="center">
+  <img src="assets/preview.gif" width="600" alt="AgentSprites preview">
+</p>
+
 ---
 
 ## What is AgentSprites?
