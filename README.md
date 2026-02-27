@@ -1,28 +1,28 @@
 # AgentSprites
 
-A macOS desktop widget system for monitoring Claude Code instances with "desktop pet" style creatures called Sprites.
+A macOS menu bar app for monitoring Claude Code instances with "desktop pet" style creatures called Sprites.
 
 ## Architecture
 
 ```
 ┌─────────────────┐     stdin JSON       ┌─────────────────┐
 │  Claude Code    │ ──────────────────▶  │ agentsprites-cli│
-│    Hooks        │                      │  (SPM executable)│
+│    Hooks        │                      │ (bundled in app)│
 └─────────────────┘                      └────────┬────────┘
-                                                  │ XPC
+                                                  │ Distributed
+                                                  │ Notification
                                                   ▼
-┌─────────────────┐     XPC Callback     ┌─────────────────┐
-│ AgentSprites.app│ ◀────────────────── │agentsprites-    │
-│   (SwiftUI)     │                      │daemon (launchd) │
-└─────────────────┘                      └─────────────────┘
+                                         ┌─────────────────┐
+                                         │ AgentSprites.app│
+                                         │   (SwiftUI)     │
+                                         └─────────────────┘
 ```
 
 ## Components
 
-- **AgentSpritesCore**: Shared library with models and XPC protocol
-- **agentsprites-daemon**: launchd agent providing XPC service for state management
-- **agentsprites-cli**: Hook handler called by Claude Code hooks
-- **AgentSprites.app**: SwiftUI menu bar app displaying session states
+- **AgentSpritesCore**: Shared library with models (SessionState, SessionEvent, HookEvent)
+- **agentsprites-cli**: Hook handler called by Claude Code, posts Distributed Notifications
+- **AgentSprites.app**: SwiftUI menu bar app that receives notifications and displays sprites
 
 ## Building
 
@@ -30,25 +30,38 @@ A macOS desktop widget system for monitoring Claude Code instances with "desktop
 # Build all targets
 swift build
 
-# Build release
-swift build -c release
+# Bundle as .app
+make bundle
 
-# Run tests
-swift test
+# Build release
+make release
 ```
 
 ## Installation
 
 ```bash
-# Run the install script
-bash Resources/install.sh
+# Full install (builds release, installs to /Applications)
+make install
 ```
 
 This will:
 1. Build release binaries
-2. Install to `~/.agentsprites/bin/`
-3. Install launchd plist to `~/Library/LaunchAgents/`
-4. Register hooks in `~/.claude/settings.json`
+2. Bundle the .app with embedded CLI
+3. Install to `/Applications/AgentSprites.app`
+4. Install character packs to `~/Library/Application Support/AgentSprites/Characters/`
+
+On first launch, the app will prompt to install Claude Code hooks.
+
+## Data Storage
+
+All app data is stored in the standard macOS location:
+```
+~/Library/Application Support/AgentSprites/
+└── Characters/          # Character packs (sprites)
+    ├── slime/
+    ├── pokemon/
+    └── ...
+```
 
 ## Session States
 
@@ -65,10 +78,7 @@ This will:
 
 ```bash
 # Test CLI with mock hook event
-echo '{"hook_event_name":"SessionStart","session_id":"test-123","cwd":"/tmp"}' | .build/debug/agentsprites-cli
-
-# Check daemon status
-launchctl print gui/$(id -u)/com.agentsprites.daemon
+echo '{"hook_event_name":"SessionStart","session_id":"test-123","cwd":"/tmp"}' | .build/debug/AgentSprites.app/Contents/Helpers/agentsprites-cli
 ```
 
 ## License

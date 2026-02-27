@@ -21,13 +21,19 @@ final class WindowObserver {
         }
     }
 
-    /// Represents a full window frame for debug visualization
-    struct WindowFrame: Sendable {
-        let minX: CGFloat
-        let maxX: CGFloat
-        let minY: CGFloat  // Bottom in Cocoa coords
-        let maxY: CGFloat  // Top in Cocoa coords
-        let name: String
+    /// Represents a wall (vertical edge of a window) that blobs can climb
+    struct Wall: Sendable {
+        enum Side: Sendable { case left, right }
+
+        let x: CGFloat          // X position of the wall
+        let minY: CGFloat       // Bottom of climbable range (Cocoa coords)
+        let maxY: CGFloat       // Top of climbable range (window top)
+        let side: Side          // Left or right edge of window
+        let windowId: CGWindowID
+
+        func contains(y: CGFloat, margin: CGFloat = 20) -> Bool {
+            y >= (minY - margin) && y <= (maxY + margin)
+        }
     }
 
     /// Represents a window rectangle for occlusion testing
@@ -77,7 +83,7 @@ final class WindowObserver {
     }
 
     private var cachedLedges: [Ledge] = []
-    private var cachedWindowFrames: [WindowFrame] = []
+    private var cachedWalls: [Wall] = []
     private var lastUpdateTime: CFTimeInterval = 0
     private let updateInterval: CFTimeInterval = 0.5  // Update every 500ms
 
@@ -85,26 +91,27 @@ final class WindowObserver {
     func getLedges() -> [Ledge] {
         let now = CACurrentMediaTime()
         if now - lastUpdateTime > updateInterval {
-            updateLedges()
+            updateSurfaces()
             lastUpdateTime = now
         }
         return cachedLedges
     }
 
-    /// Get all window frames for debug visualization
-    func getWindowFrames() -> [WindowFrame] {
+    /// Get all walls (window edges) for climbing
+    func getWalls() -> [Wall] {
         let now = CACurrentMediaTime()
         if now - lastUpdateTime > updateInterval {
-            updateLedges()
+            updateSurfaces()
             lastUpdateTime = now
         }
-        return cachedWindowFrames
+        return cachedWalls
     }
 
-    // swiftlint:disable:next cyclomatic_complexity
-    private func updateLedges() {
+    // swiftlint:disable:next cyclomatic_complexity function_body_length
+    private func updateSurfaces() {
         guard let windowList = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
             cachedLedges = []
+            cachedWalls = []
             return
         }
 
@@ -115,13 +122,14 @@ final class WindowObserver {
         // CGWindow bounds always use primary screen as origin reference
         guard let primaryScreen = NSScreen.screens.first else {
             cachedLedges = []
+            cachedWalls = []
             return
         }
         let screenHeight = primaryScreen.frame.height
+        let groundY = primaryScreen.visibleFrame.minY
 
         // Collect valid windows with their rects (in front-to-back order)
         var windowRects: [(rect: WindowRect, windowId: CGWindowID)] = []
-        var windowFrames: [WindowFrame] = []
 
         for windowInfo in windowList {
             guard let boundsDict = windowInfo[kCGWindowBounds as String] as? [String: CGFloat],
@@ -182,16 +190,6 @@ final class WindowObserver {
             )
 
             windowRects.append((rect, windowId))
-
-            // Store window frame for debug visualization
-            let displayName = windowName.isEmpty ? ownerName : "\(ownerName): \(windowName)"
-            windowFrames.append(WindowFrame(
-                minX: x,
-                maxX: x + width,
-                minY: windowBottom,
-                maxY: windowTop,
-                name: displayName
-            ))
         }
 
         // Now process windows and create ledges, accounting for occlusion
@@ -240,7 +238,92 @@ final class WindowObserver {
 
         // Sort by Y position (highest first) so we check top ledges first
         cachedLedges = ledges.sorted { $0.y > $1.y }
-        cachedWindowFrames = windowFrames
+
+        // Generate walls from window edges
+        var walls: [Wall] = []
+
+        for (index, current) in windowRects.enumerated() {
+            let rect = current.rect
+            let windowId = current.windowId
+
+            // Wall minY should be the window's bottom edge (not extend below the window)
+            // But if there's a surface above the window bottom, use that instead
+            let windowBottom = rect.minY
+            let surfaceBelowLeft = findSurfaceBelow(atX: rect.minX, belowY: rect.maxY, ledges: cachedLedges, groundY: groundY)
+            let surfaceBelowRight = findSurfaceBelow(atX: rect.maxX, belowY: rect.maxY, ledges: cachedLedges, groundY: groundY)
+            // Take the higher of window bottom or surface below
+            let leftWallMinY = max(windowBottom, surfaceBelowLeft)
+            let rightWallMinY = max(windowBottom, surfaceBelowRight)
+
+            // Check for occlusion by windows in front
+            // A wall is occluded if a front window covers its X position
+            var leftWallVisible = true
+            var rightWallVisible = true
+
+            for frontIndex in 0..<index {
+                let frontRect = windowRects[frontIndex].rect
+
+                // Left wall is occluded if front window's horizontal range covers minX
+                // and front window's vertical range overlaps with the wall's range
+                if frontRect.minX <= rect.minX && frontRect.maxX > rect.minX {
+                    if frontRect.minY < rect.maxY && frontRect.maxY > leftWallMinY {
+                        leftWallVisible = false
+                    }
+                }
+
+                // Right wall is occluded if front window's horizontal range covers maxX
+                if frontRect.minX < rect.maxX && frontRect.maxX >= rect.maxX {
+                    if frontRect.minY < rect.maxY && frontRect.maxY > rightWallMinY {
+                        rightWallVisible = false
+                    }
+                }
+            }
+
+            // Minimum wall height to be useful
+            let minWallHeight: CGFloat = 50
+
+            if leftWallVisible && (rect.maxY - leftWallMinY) >= minWallHeight {
+                walls.append(Wall(
+                    x: rect.minX,
+                    minY: leftWallMinY,
+                    maxY: rect.maxY,
+                    side: .left,
+                    windowId: windowId
+                ))
+            }
+
+            if rightWallVisible && (rect.maxY - rightWallMinY) >= minWallHeight {
+                walls.append(Wall(
+                    x: rect.maxX,
+                    minY: rightWallMinY,
+                    maxY: rect.maxY,
+                    side: .right,
+                    windowId: windowId
+                ))
+            }
+        }
+
+        cachedWalls = walls
+    }
+
+    /// Find the highest surface (ledge or ground) at a given X position below a given Y
+    private func findSurfaceBelow(atX x: CGFloat, belowY: CGFloat, ledges: [Ledge], groundY: CGFloat) -> CGFloat {
+        var highestY = groundY
+
+        for ledge in ledges {
+            // Ledge must be below our starting point
+            guard ledge.y < belowY else { continue }
+
+            // Check if this X is within the ledge bounds (with margin)
+            guard ledge.contains(x: x, margin: 10) else { continue }
+
+            // Take the highest one
+            if ledge.y > highestY {
+                highestY = ledge.y
+            }
+        }
+
+        return highestY
     }
 
     /// Subtract a blocking horizontal range from a segment, considering Y overlap

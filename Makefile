@@ -1,12 +1,8 @@
-.PHONY: build release run install restart restart-daemon restart-app clean setup-characters lint format
+.PHONY: build release run install restart restart-app clean lint format bundle
 
 # Directories
-INSTALL_DIR := $(HOME)/.agentsprites
-BIN_DIR := $(INSTALL_DIR)/bin
-CHARACTERS_DIR := $(INSTALL_DIR)/characters
-LAUNCH_AGENTS_DIR := $(HOME)/Library/LaunchAgents
-PLIST_NAME := com.agentsprites.daemon.plist
-DAEMON_LABEL := com.agentsprites.daemon
+APP_SUPPORT_DIR := $(HOME)/Library/Application Support/AgentSprites
+CHARACTERS_DIR := $(APP_SUPPORT_DIR)/Characters
 
 # Install character packs to runtime directory (not bundled with app)
 install-characters:
@@ -22,53 +18,48 @@ install-characters:
 build:
 	swift build
 
-release: setup-characters
+# Bundle creates the .app with embedded CLI
+bundle: build
+	@bash Resources/bundle-app.sh debug
+
+release:
 	swift build -c release
+	@bash Resources/bundle-app.sh release
 
-run: build
-	.build/debug/AgentSprites &
+run: bundle
+	open .build/debug/AgentSprites.app
 
-# Full installation (builds release, installs binaries, configures hooks)
-install:
-	./Resources/install.sh
+# Full installation (builds release, installs app bundle to /Applications)
+install: release install-characters
+	@echo "Installing AgentSprites.app to /Applications..."
+	@rm -rf "/Applications/AgentSprites.app"
+	@cp -r .build/release/AgentSprites.app "/Applications/"
+	@echo ""
+	@echo "=== Installation Complete ==="
+	@echo "App installed to: /Applications/AgentSprites.app"
+	@echo "Character packs: $(CHARACTERS_DIR)"
+	@echo ""
+	@echo "To start: open /Applications/AgentSprites.app"
+	@echo "The app will prompt to install Claude Code hooks on first run."
 
-# Quick restart for development: rebuild, reinstall binaries, restart daemon + app
-restart: build install-characters
-	@echo "Installing binaries..."
-	@mkdir -p "$(BIN_DIR)"
-	@cp .build/debug/agentsprites-daemon "$(BIN_DIR)/"
-	@cp .build/debug/agentsprites-cli "$(BIN_DIR)/"
-	@cp .build/debug/AgentSprites "$(BIN_DIR)/"
-	@chmod +x "$(BIN_DIR)/agentsprites-daemon"
-	@chmod +x "$(BIN_DIR)/agentsprites-cli"
-	@chmod +x "$(BIN_DIR)/AgentSprites"
-	@echo "Restarting daemon..."
-	@-launchctl kickstart -k "gui/$$(id -u)/$(DAEMON_LABEL)" 2>/dev/null || \
-		(echo "Daemon not loaded, loading..." && \
-		 launchctl bootstrap "gui/$$(id -u)" "$(LAUNCH_AGENTS_DIR)/$(PLIST_NAME)" 2>/dev/null; \
-		 launchctl kickstart "gui/$$(id -u)/$(DAEMON_LABEL)")
+# Quick restart for development: rebuild, bundle, restart app
+restart: bundle install-characters
 	@echo "Restarting app..."
 	@-pkill -x AgentSprites 2>/dev/null || true
 	@sleep 0.3
-	@"$(BIN_DIR)/AgentSprites" &
+	@open .build/debug/AgentSprites.app
 	@echo "Done!"
 
-restart-daemon: build
-	@cp .build/debug/agentsprites-daemon "$(BIN_DIR)/"
-	@chmod +x "$(BIN_DIR)/agentsprites-daemon"
-	@-launchctl kickstart -k "gui/$$(id -u)/$(DAEMON_LABEL)" 2>/dev/null || true
-	@echo "Daemon restarted"
-
-restart-app: build
-	@cp .build/debug/AgentSprites "$(BIN_DIR)/"
-	@chmod +x "$(BIN_DIR)/AgentSprites"
+restart-app: bundle
 	@-pkill -x AgentSprites 2>/dev/null || true
 	@sleep 0.3
-	@"$(BIN_DIR)/AgentSprites" &
+	@open .build/debug/AgentSprites.app
 	@echo "App restarted"
 
 clean:
 	swift package clean
+	rm -rf .build/debug/AgentSprites.app
+	rm -rf .build/release/AgentSprites.app
 
 # Linting and formatting
 lint:

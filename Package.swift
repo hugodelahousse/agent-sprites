@@ -8,7 +8,6 @@ let package = Package(
     ],
     products: [
         .library(name: "AgentSpritesCore", targets: ["AgentSpritesCore"]),
-        .executable(name: "agentsprites-daemon", targets: ["agentsprites-daemon"]),
         .executable(name: "agentsprites-cli", targets: ["agentsprites-cli"]),
         .executable(name: "AgentSprites", targets: ["AgentSprites"]),
     ],
@@ -22,16 +21,6 @@ let package = Package(
             name: "AgentSpritesCore",
             dependencies: [],
             path: "Sources/AgentSpritesCore",
-            plugins: [
-                .plugin(name: "SwiftLintBuildToolPlugin", package: "SwiftLint"),
-            ]
-        ),
-
-        // Daemon (launchd agent providing XPC service)
-        .executableTarget(
-            name: "agentsprites-daemon",
-            dependencies: ["AgentSpritesCore"],
-            path: "Sources/agentsprites-daemon",
             plugins: [
                 .plugin(name: "SwiftLintBuildToolPlugin", package: "SwiftLint"),
             ]

@@ -13,10 +13,11 @@ private func timestamp() -> String {
 struct AgentSpritesApp: App {
     @StateObject private var viewModel = SessionViewModel()
     @StateObject private var blobCoordinator = BlobCoordinator()
+    @StateObject private var appState = AppState()
 
     var body: some Scene {
         MenuBarExtra {
-            MenuBarView(viewModel: viewModel, blobCoordinator: blobCoordinator)
+            MenuBarView(viewModel: viewModel, blobCoordinator: blobCoordinator, appState: appState)
         } label: {
             Label("AgentSprites", systemImage: viewModel.menuBarIcon)
         }
@@ -27,23 +28,85 @@ struct AgentSpritesApp: App {
     }
 }
 
-/// View model managing session state and XPC connection to daemon
+/// Type of hook prompt to show
+enum HookPromptType: Equatable {
+    case install
+    case replace(existingPath: String)
+}
+
+/// App-wide state for things like hook installation status
+@MainActor
+final class AppState: ObservableObject {
+    @Published var hooksInstalled: Bool = false
+    @Published var hookPromptType: HookPromptType?
+
+    var showingHookPrompt: Bool {
+        hookPromptType != nil
+    }
+
+    private let logger = Logger(subsystem: "com.agentsprites.app", category: "AppState")
+
+    init() {
+        checkHookStatus()
+    }
+
+    func checkHookStatus() {
+        let status = HookInstaller.checkExistingHooks()
+        logger.info("Hook status: \(String(describing: status), privacy: .public)")
+
+        switch status {
+        case .currentApp:
+            hooksInstalled = true
+            hookPromptType = nil
+
+        case .none:
+            hooksInstalled = false
+            // Show install prompt if CLI is bundled
+            if HookInstaller.bundledCLIPath != nil {
+                Task {
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    hookPromptType = .install
+                }
+            }
+
+        case .differentApp(let path):
+            hooksInstalled = false
+            // Show replace prompt
+            Task {
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                hookPromptType = .replace(existingPath: path)
+            }
+        }
+    }
+
+    func installHooks() {
+        if HookInstaller.installHooks() {
+            hooksInstalled = true
+            hookPromptType = nil
+            logger.info("Hooks installed successfully via prompt")
+        } else {
+            logger.error("Failed to install hooks via prompt")
+        }
+    }
+
+    func skipHookInstall() {
+        hookPromptType = nil
+    }
+}
+
+/// View model managing session state via distributed notifications from CLI
 @MainActor
 final class SessionViewModel: ObservableObject {
     @Published var sessions: [SessionState] = []
-    @Published var isConnected = false
-    @Published var lastError: String?
+    @Published var isConnected = true  // Always "connected" since we use notifications
 
-    private var connection: NSXPCConnection?
-    private var notificationObserver: NSObjectProtocol?
+    private let sessionManager = SessionManager()
+    private var eventObserver: NSObjectProtocol?
+    private var endObserver: NSObjectProtocol?
     private let terminalFocuser = TerminalFocuser()
     private let logger = Logger(subsystem: "com.agentsprites.app", category: "SessionViewModel")
 
     var menuBarIcon: String {
-        if !isConnected {
-            return "exclamationmark.circle"
-        }
-
         let hasWorking = sessions.contains { $0.status == .working }
         let hasWaiting = sessions.contains { $0.status == .waitingForInput || $0.status == .waitingForPermission }
         let hasError = sessions.contains { $0.status == .error }
@@ -59,148 +122,88 @@ final class SessionViewModel: ObservableObject {
     }
 
     init() {
-        setupConnection()
+        setupSessionManager()
         observeNotifications()
     }
 
     deinit {
-        if let observer = notificationObserver {
+        if let observer = eventObserver {
             DistributedNotificationCenter.default().removeObserver(observer)
         }
-        connection?.invalidate()
+        if let observer = endObserver {
+            DistributedNotificationCenter.default().removeObserver(observer)
+        }
     }
 
-    private func setupConnection() {
-        connection = NSXPCConnection(machServiceName: AgentSpritesConstants.xpcServiceName, options: [])
-        connection?.remoteObjectInterface = createDaemonInterface()
-
-        connection?.interruptionHandler = { [weak self] in
-            Task { @MainActor in
-                self?.isConnected = false
-                self?.lastError = "Connection interrupted"
+    private func setupSessionManager() {
+        // Set up callback for internal state changes (like done->idle transitions)
+        Task {
+            await sessionManager.setChangeCallback { [weak self] sessions in
+                Task { @MainActor in
+                    self?.sessions = sessions
+                }
             }
         }
-
-        connection?.invalidationHandler = { [weak self] in
-            Task { @MainActor in
-                self?.isConnected = false
-                // Try to reconnect after a delay
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
-                self?.setupConnection()
-            }
-        }
-
-        connection?.resume()
-
-        // Initial fetch
-        fetchSessions()
     }
-
-    private var hookStartedObserver: NSObjectProtocol?
 
     private func observeNotifications() {
-        // Listen for immediate hook started notification (direct from CLI, bypasses daemon)
-        hookStartedObserver = DistributedNotificationCenter.default().addObserver(
-            forName: Notification.Name("com.agentsprites.hookStarted"),
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.logger.info("[TIMING] \(timestamp(), privacy: .public) App received hookStarted notification")
-        }
-
-        // Listen for distributed notifications from daemon
-        notificationObserver = DistributedNotificationCenter.default().addObserver(
-            forName: AgentSpritesConstants.sessionsDidChangeNotification,
+        // Listen for session events from CLI
+        eventObserver = DistributedNotificationCenter.default().addObserver(
+            forName: AgentSpritesConstants.sessionEventNotification,
             object: nil,
             queue: .main
         ) { [weak self] notification in
+            guard let self else { return }
             Task { @MainActor in
-                self?.handleSessionNotification(notification)
+                self.handleSessionEvent(notification)
+            }
+        }
+
+        // Listen for session end notifications from CLI
+        endObserver = DistributedNotificationCenter.default().addObserver(
+            forName: AgentSpritesConstants.sessionEndNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self else { return }
+            Task { @MainActor in
+                self.handleSessionEnd(notification)
             }
         }
     }
 
-    private func handleSessionNotification(_ notification: Notification) {
+    private func handleSessionEvent(_ notification: Notification) {
         let startTime = Date()
-        logger.info("[TIMING] \(timestamp(), privacy: .public) App received notification")
+        logger.info("[TIMING] \(timestamp(), privacy: .public) App received session event notification")
 
-        guard let userInfo = notification.userInfo else {
-            // No payload, fallback to full fetch
-            logger.info("[TIMING] \(timestamp(), privacy: .public) No payload, falling back to fetchSessions")
-            fetchSessions()
+        guard let userInfo = notification.userInfo,
+              let eventJSON = userInfo["eventJSON"] as? String,
+              let event = SessionEvent.fromJSONString(eventJSON) else {
+            logger.warning("Failed to parse session event from notification")
             return
         }
 
-        isConnected = true
-        lastError = nil
+        let parseTime = Date().timeIntervalSince(startTime) * 1000
+        logger.info("[TIMING] \(timestamp(), privacy: .public) Event parsed (+\(String(format: "%.1f", parseTime), privacy: .public)ms), processing...")
 
-        // Handle session removal
-        if let removedId = userInfo["removedSessionId"] as? String {
-            sessions.removeAll { $0.id == removedId }
-            let elapsed = Date().timeIntervalSince(startTime) * 1000
-            logger.info("[TIMING] \(timestamp(), privacy: .public) Session removed (+\(String(format: "%.1f", elapsed), privacy: .public)ms)")
+        Task {
+            let updatedSessions = await sessionManager.processEvent(event)
+            self.sessions = updatedSessions
+        }
+    }
+
+    private func handleSessionEnd(_ notification: Notification) {
+        logger.info("[TIMING] \(timestamp(), privacy: .public) App received session end notification")
+
+        guard let userInfo = notification.userInfo,
+              let sessionId = userInfo["sessionId"] as? String else {
+            logger.warning("Failed to parse session ID from end notification")
             return
         }
 
-        // Try to extract session directly from notification payload (avoids XPC round-trip)
-        if let sessionJSON = userInfo["sessionJSON"] as? String,
-           let jsonData = sessionJSON.data(using: .utf8) {
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-            if let session = try? decoder.decode(SessionState.self, from: jsonData) {
-                updateSession(session)
-                let elapsed = Date().timeIntervalSince(startTime) * 1000
-                logger.info("[TIMING] \(timestamp(), privacy: .public) Session updated from payload (+\(String(format: "%.1f", elapsed), privacy: .public)ms)")
-                return
-            }
-        }
-
-        // Fallback to full fetch if payload invalid
-        logger.info("[TIMING] \(timestamp(), privacy: .public) Invalid payload, falling back to fetchSessions")
-        fetchSessions()
-    }
-
-    private func updateSession(_ session: SessionState) {
-        // Update existing session or add new one
-        if let index = sessions.firstIndex(where: { $0.id == session.id }) {
-            sessions[index] = session
-        } else {
-            sessions.append(session)
-            sessions.sort { $0.lastUpdated > $1.lastUpdated }
-        }
-    }
-
-    func fetchSessions() {
-        let daemon = connection?.remoteObjectProxyWithErrorHandler { [weak self] error in
-            Task { @MainActor in
-                self?.isConnected = false
-                self?.lastError = error.localizedDescription
-            }
-        } as? AgentSpritesDaemonProtocol
-
-        daemon?.getAllSessions { [weak self] data in
-            Task { @MainActor in
-                guard let self = self, let data = data else {
-                    self?.isConnected = false
-                    return
-                }
-
-                self.isConnected = true
-                self.lastError = nil
-
-                let decoder = JSONDecoder()
-                decoder.dateDecodingStrategy = .iso8601
-                if let store = try? decoder.decode(SessionStore.self, from: data) {
-                    self.sessions = store.activeSessions
-                }
-            }
-        }
-
-        // Also ping to verify connection
-        daemon?.ping { [weak self] alive in
-            Task { @MainActor in
-                self?.isConnected = alive
-            }
+        Task {
+            let updatedSessions = await sessionManager.removeSession(sessionId: sessionId)
+            self.sessions = updatedSessions
         }
     }
 

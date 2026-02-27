@@ -2,13 +2,12 @@
 
 ## Build & Run
 - Build: `make build` or `swift build`
-- Build release: `make release`
-- Run: `make run`
-- Install (full): `make install` - builds release, installs to ~/.agentsprites, configures Claude hooks
-- Restart (dev): `make restart` - rebuilds debug, installs binaries, restarts daemon + app
-- Restart daemon only: `make restart-daemon`
+- Bundle: `make bundle` - creates .app bundle with embedded CLI
+- Build release: `make release` - builds release and creates .app bundle
+- Run: `make run` - builds, bundles, and opens app
+- Install: `make install` - builds release, installs .app to /Applications
+- Restart (dev): `make restart` - rebuilds, bundles, restarts app
 - Restart app only: `make restart-app`
-- Setup characters: `make setup-characters` (auto-runs on build)
 - Run tests: `swift test`
 - Lint: `make lint` (SwiftLint)
 - Lint & fix: `make lint-fix`
@@ -17,10 +16,31 @@
 - Clean: `make clean`
 
 ## Project Structure
-- `AgentSpritesCore`: Shared library with models and XPC protocol
-- `agentsprites-daemon`: launchd agent providing XPC service
-- `agentsprites-cli`: Hook handler called by Claude Code
-- `AgentSprites`: SwiftUI menu bar app
+- `AgentSpritesCore`: Shared library with models (SessionState, SessionEvent, HookEvent)
+- `agentsprites-cli`: Hook handler called by Claude Code, posts Distributed Notifications
+- `AgentSprites`: SwiftUI menu bar app that receives notifications and displays sprites
+
+## App Bundle Structure
+```
+AgentSprites.app/
+├── Contents/
+│   ├── Info.plist
+│   ├── MacOS/
+│   │   └── AgentSprites       # Main app executable
+│   ├── Helpers/
+│   │   └── agentsprites-cli   # Bundled CLI for hooks
+│   └── Resources/
+```
+
+The CLI is bundled inside the app. On first launch, the app prompts to install Claude Code hooks pointing to the bundled CLI.
+
+## Architecture
+The app uses **Distributed Notifications** for IPC between CLI and App:
+- CLI receives hook events from Claude Code via stdin
+- CLI posts `SessionEvent` as JSON via `DistributedNotificationCenter`
+- App receives notifications and updates session state via `SessionManager` actor
+- CLI is bundled inside .app - no separate installation needed
+- App handles hook installation via `HookInstaller` service
 
 ## Code Style
 - Follow Swift API Design Guidelines
@@ -34,7 +54,6 @@
 ### Concurrency
 - ALWAYS use `async/await`, `Actor`, `@MainActor`, `@Sendable` over GCD/completion handlers
 - Use `TaskGroup` and `AsyncStream` for structured concurrency
-- Exception: `DispatchSemaphore` is acceptable in CLI for synchronous XPC calls
 - Prefer `.task { }` modifier over `.onAppear + Task { }` for async work in SwiftUI
 
 ### Value Types
@@ -54,7 +73,7 @@
 
 ### Logging
 - ALWAYS use `os.Logger` — never `print()`, `NSLog()`, or third-party logging
-- Subsystem pattern: `com.agentsprites.<cli|daemon|app>`
+- Subsystem pattern: `com.agentsprites.<cli|app>`
 - Use privacy annotations: `\(variable, privacy: .public)` for non-sensitive data
 - Include timing info for performance-critical paths using `timestamp()` helper
 
@@ -68,7 +87,7 @@
 - `UserDefaults`/`@AppStorage` for simple preferences only
 - Never store sensitive data (tokens, passwords) in UserDefaults — use Keychain
 - Use `FileManager` with proper directory APIs, not hardcoded paths
-- Project-defined paths like `~/.agentsprites/` are acceptable
+- Use `AgentSpritesConstants.applicationSupportDirectory` for app data paths
 
 ### SwiftUI
 - Extract subviews when `body` exceeds ~50 lines
@@ -110,11 +129,21 @@ This app runs continuously in the background - CPU/memory efficiency is paramoun
 - Cache expensive computations (window ledge detection is already cached at 500ms)
 - Use `Task.sleep` with reasonable intervals, not busy loops
 
-## XPC Patterns
-- Protocol must be @objc for NSXPCInterface
-- Use NSSecureCoding for custom types across XPC boundary
-- Handle connection interruption/invalidation gracefully
-- Daemon registers Mach service via launchd plist MachServices key
+## Distributed Notifications
+IPC between CLI and App uses `DistributedNotificationCenter`:
+
+**Notification Names (in AgentSpritesConstants):**
+- `sessionEventNotification`: CLI posts session updates with JSON payload
+- `sessionEndNotification`: CLI posts when a session ends
+
+**Payload Format:**
+```swift
+// Session event (userInfo)
+["eventJSON": String]  // JSON-encoded SessionEvent
+
+// Session end (userInfo)
+["sessionId": String]  // Session ID to remove
+```
 
 ## SwiftUI Patterns
 - Use @StateObject for owned view models
@@ -125,27 +154,26 @@ This app runs continuously in the background - CPU/memory efficiency is paramoun
 ## Testing
 - XCTest for unit tests
 - Test models and state machine logic in AgentSpritesCore
-- Mock XPC connections for integration tests
 
 ## Debugging & Logging
 The CLI uses `os.Logger` (subsystem: `com.agentsprites.cli`) for unified logging.
 
 **Stream logs in real-time:**
 ```bash
-log stream --predicate 'subsystem == "com.agentsprites.cli"' --level debug 2>&1 | tee /tmp/agentsprites-debug.log
+log stream --predicate 'subsystem BEGINSWITH "com.agentsprites"' --level debug
 ```
 
 **View recent logs:**
 ```bash
-log show --predicate 'subsystem == "com.agentsprites.cli"' --last 10m --level debug
+log show --predicate 'subsystem BEGINSWITH "com.agentsprites"' --last 10m --level debug
 ```
 
 ## Common Issues
-- XPC requires code signing for production
-- launchd plist must be in ~/Library/LaunchAgents for user agents
 - MenuBarExtra requires .menuBarExtraStyle(.window) for custom views
-- Use `launchctl bootstrap gui/$(id -u) <plist>` to load daemon
-- Use `launchctl kickstart gui/$(id -u)/com.agentsprites.daemon` to start
+- App must be running to receive notifications from CLI
+- If sprites aren't updating, check if the app is running and hooks are installed
+- Hooks point to bundled CLI path - moving the .app will break hooks (reinstall via menu)
+- First-run hook prompt only shows if bundled CLI is detected
 
 ## Session States
 | Status | Trigger Event | Color |

@@ -1,3 +1,4 @@
+import AgentSpritesCore
 import AppKit
 import SwiftUI
 
@@ -6,6 +7,7 @@ struct BlobBounds {
     let sessionId: String
     let position: CGPoint  // Bottom-center of blob (Cocoa coords)
     let size: CGSize       // 64x64 typically
+    let status: SessionStatus?
 }
 
 /// Debug overlay that shows ledge positions as lines on all screens
@@ -95,7 +97,7 @@ final class LedgeDebugOverlay {
     private func updateLedges() {
         let screens = NSScreen.screens
         let ledges = windowObserver.getLedges()
-        let windowFrames = windowObserver.getWindowFrames()
+        let walls = windowObserver.getWalls()
         let blobBounds = getBlobBounds?() ?? []
 
         // Use primary screen height for coordinate conversion (matches CGWindow coords)
@@ -109,7 +111,7 @@ final class LedgeDebugOverlay {
 
             let view = LedgeDebugView(
                 ledges: ledges,
-                windowFrames: windowFrames,
+                walls: walls,
                 blobBounds: blobBounds,
                 groundY: groundY,
                 screenHeight: primaryScreenHeight,
@@ -124,10 +126,10 @@ final class LedgeDebugOverlay {
     }
 }
 
-/// SwiftUI view that draws ledge lines and window frames
+/// SwiftUI view that draws ledge lines, walls, and blob bounds
 private struct LedgeDebugView: View {
     let ledges: [WindowObserver.Ledge]
-    let windowFrames: [WindowObserver.WindowFrame]
+    let walls: [WindowObserver.Wall]
     let blobBounds: [BlobBounds]
     let groundY: CGFloat
     let screenHeight: CGFloat  // Primary screen height for coordinate conversion
@@ -162,35 +164,6 @@ private struct LedgeDebugView: View {
             let canvasLabel = Text("BLOB CANVAS").font(.system(size: 10, weight: .bold, design: .monospaced))
             context.draw(canvasLabel, at: CGPoint(x: canvasLeft + 5, y: canvasTop + 14))
 
-            // Draw window frames (so ledges appear on top)
-            for (index, frame) in windowFrames.enumerated() {
-                // Convert from Cocoa coordinates to SwiftUI (relative to this screen)
-                let top = screenHeight - frame.maxY - offsetY
-                let bottom = screenHeight - frame.minY - offsetY
-                let left = frame.minX - offsetX
-                let rect = CGRect(x: left, y: top, width: frame.maxX - frame.minX, height: bottom - top)
-
-                // Skip if not visible on this screen
-                if rect.maxX < 0 || rect.minX > size.width || rect.maxY < 0 || rect.minY > size.height {
-                    continue
-                }
-
-                let framePath = Path { path in
-                    path.addRect(rect)
-                }
-
-                // Use different colors for each window
-                let colors: [Color] = [.orange, .purple, .yellow, .teal]
-                let color = colors[index % colors.count]
-                context.stroke(framePath, with: .color(color.opacity(0.5)), lineWidth: 1)
-
-                // Draw window name
-                let nameText = Text(frame.name)
-                    .font(.system(size: 8, design: .monospaced))
-                    .foregroundColor(color)
-                context.draw(nameText, at: CGPoint(x: left + 4, y: top + 12))
-            }
-
             // Draw ground line (relative to this screen)
             let groundYLocal = screenHeight - groundY - offsetY
             let groundPath = Path { path in
@@ -203,7 +176,7 @@ private struct LedgeDebugView: View {
             let groundText = Text("GROUND").font(.system(size: 10, weight: .bold, design: .monospaced))
             context.draw(groundText, at: CGPoint(x: 50, y: groundYLocal - 12))
 
-            // Draw ledge lines
+            // Draw ledge lines (cyan/pink horizontal)
             for (index, ledge) in ledges.enumerated() {
                 // Convert from Cocoa coordinates (origin bottom-left) to SwiftUI (origin top-left)
                 let y = screenHeight - ledge.y - offsetY
@@ -229,6 +202,49 @@ private struct LedgeDebugView: View {
                     .font(.system(size: 9, design: .monospaced))
                     .foregroundColor(color)
                 context.draw(label, at: CGPoint(x: minX + 5, y: y - 12))
+            }
+
+            // Draw walls (orange vertical lines)
+            for (index, wall) in walls.enumerated() {
+                // Convert from Cocoa coordinates to SwiftUI
+                let x = wall.x - offsetX
+                let topY = screenHeight - wall.maxY - offsetY
+                let bottomY = screenHeight - wall.minY - offsetY
+
+                // Skip if not visible on this screen
+                if x < 0 || x > size.width || bottomY < 0 || topY > size.height {
+                    continue
+                }
+
+                let wallPath = Path { path in
+                    path.move(to: CGPoint(x: x, y: topY))
+                    path.addLine(to: CGPoint(x: x, y: bottomY))
+                }
+
+                context.stroke(wallPath, with: .color(.orange.opacity(0.8)), lineWidth: 2)
+
+                // Draw wall info
+                let sideLabel = wall.side == .left ? "L" : "R"
+                let label = Text("W\(index)\(sideLabel)")
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundColor(.orange)
+
+                // Position label at the middle of the wall
+                let labelY = (topY + bottomY) / 2
+                let labelX = wall.side == .left ? x + 4 : x - 24
+                context.draw(label, at: CGPoint(x: labelX, y: labelY))
+
+                // Draw small tick marks at wall bounds
+                let tickSize: CGFloat = 4
+                let tickPath = Path { path in
+                    // Top tick
+                    path.move(to: CGPoint(x: x - tickSize, y: topY))
+                    path.addLine(to: CGPoint(x: x + tickSize, y: topY))
+                    // Bottom tick
+                    path.move(to: CGPoint(x: x - tickSize, y: bottomY))
+                    path.addLine(to: CGPoint(x: x + tickSize, y: bottomY))
+                }
+                context.stroke(tickPath, with: .color(.orange.opacity(0.6)), lineWidth: 1)
             }
 
             // Draw blob bounding boxes
@@ -259,8 +275,9 @@ private struct LedgeDebugView: View {
                 // Use red for blob bounds to stand out
                 context.stroke(blobPath, with: .color(.red.opacity(0.9)), lineWidth: 2)
 
-                // Draw blob info
-                let blobLabel = Text("B\(index)")
+                // Draw blob info with status
+                let statusText = blob.status?.rawValue ?? "none"
+                let blobLabel = Text("B\(index) [\(statusText)]")
                     .font(.system(size: 9, weight: .bold, design: .monospaced))
                     .foregroundColor(.red)
                 context.draw(blobLabel, at: CGPoint(x: blobLeft + 4, y: blobTop + 12))

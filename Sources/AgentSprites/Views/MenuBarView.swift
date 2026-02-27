@@ -4,59 +4,45 @@ import AgentSpritesCore
 struct MenuBarView: View {
     @ObservedObject var viewModel: SessionViewModel
     @ObservedObject var blobCoordinator: BlobCoordinator
+    @ObservedObject var appState: AppState
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            // Header
+            // Header with settings gear
             HStack {
                 Text("AgentSprites")
                     .font(.headline)
                 Spacer()
-                ConnectionStatusView(isConnected: viewModel.isConnected)
+                Button(
+                    action: {
+                        SettingsWindowController.shared.show(
+                            blobCoordinator: blobCoordinator,
+                            appState: appState
+                        )
+                    },
+                    label: {
+                        Image(systemName: "gearshape")
+                            .foregroundColor(.secondary)
+                    }
+                )
+                .buttonStyle(.plain)
+                .help("Settings")
             }
             .padding(.horizontal, 12)
             .padding(.top, 8)
 
-            // Floating blobs toggle
+            // Hook installation prompt (only shown when needed)
+            if appState.showingHookPrompt {
+                HookInstallPromptView(appState: appState)
+                    .padding(.horizontal, 12)
+                Divider()
+            }
+
+            // Show sprites toggle
             Toggle(isOn: $blobCoordinator.isEnabled) {
-                Label("Floating Blobs", systemImage: "circle.hexagongrid.fill")
+                Label("Show Sprites", systemImage: "sparkles")
             }
             .toggleStyle(.switch)
-            .padding(.horizontal, 12)
-
-            // Debug ledges toggle
-            Toggle(isOn: $blobCoordinator.debugLedgesEnabled) {
-                Label("Debug Ledges", systemImage: "line.horizontal.3")
-            }
-            .toggleStyle(.switch)
-            .padding(.horizontal, 12)
-
-            // Character settings button
-            Button(
-                action: { SettingsWindowController.shared.show(blobCoordinator: blobCoordinator) },
-                label: {
-                    HStack {
-                        Label("Character Settings", systemImage: "person.crop.rectangle.stack")
-                        Spacer()
-                        if let pack = blobCoordinator.availablePacks.first(where: { $0.id == blobCoordinator.selectedPackId }) {
-                            Text(pack.name)
-                                .foregroundColor(.secondary)
-                        }
-                        Image(systemName: "chevron.right")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                }
-            )
-            .buttonStyle(.plain)
-            .padding(.horizontal, 12)
-
-            // Randomize mappings button
-            Button(
-                action: { blobCoordinator.randomizeMappings() },
-                label: { Label("Randomize Colors", systemImage: "dice") }
-            )
-            .buttonStyle(.plain)
             .padding(.horizontal, 12)
 
             Divider()
@@ -70,6 +56,11 @@ struct MenuBarView: View {
                     Text("No active sessions")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
+                    if !appState.hooksInstalled {
+                        Text("Install hooks via Settings")
+                            .font(.caption)
+                            .foregroundColor(.orange)
+                    }
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 20)
@@ -89,14 +80,8 @@ struct MenuBarView: View {
 
             Divider()
 
-            // Footer with actions
+            // Footer with quit action
             HStack {
-                Button(
-                    action: { viewModel.fetchSessions() },
-                    label: { Label("Refresh", systemImage: "arrow.clockwise") }
-                )
-                .buttonStyle(.borderless)
-
                 Spacer()
 
                 Button(
@@ -108,21 +93,106 @@ struct MenuBarView: View {
             .padding(.horizontal, 12)
             .padding(.bottom, 8)
         }
-        .frame(width: 320)
+        .frame(width: 300)
     }
 }
 
-struct ConnectionStatusView: View {
-    let isConnected: Bool
+struct HookInstallPromptView: View {
+    @ObservedObject var appState: AppState
 
     var body: some View {
-        HStack(spacing: 4) {
-            Circle()
-                .fill(isConnected ? Color.green : Color.red)
-                .frame(width: 8, height: 8)
-            Text(isConnected ? "Connected" : "Disconnected")
+        VStack(alignment: .leading, spacing: 8) {
+            switch appState.hookPromptType {
+            case .install:
+                installPrompt
+            case .replace(let existingPath):
+                replacePrompt(existingPath: existingPath)
+            case .none:
+                EmptyView()
+            }
+        }
+        .padding(10)
+        .background(promptBackgroundColor.opacity(0.1))
+        .cornerRadius(8)
+    }
+
+    private var promptBackgroundColor: Color {
+        switch appState.hookPromptType {
+        case .replace:
+            return .orange
+        default:
+            return .blue
+        }
+    }
+
+    private var installPrompt: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Image(systemName: "link.badge.plus")
+                    .foregroundColor(.blue)
+                Text("Install Claude Code Hooks?")
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+            }
+
+            Text("AgentSprites needs hooks to receive session updates.")
                 .font(.caption)
                 .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack {
+                Button("Install") {
+                    appState.installHooks()
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+
+                Button("Later") {
+                    appState.skipHookInstall()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
         }
+    }
+
+    private func replacePrompt(existingPath: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundColor(.orange)
+                Text("Different Installation Found")
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+            }
+
+            Text(shortenPath(existingPath))
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+
+            HStack {
+                Button("Replace") {
+                    appState.installHooks()
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+
+                Button("Keep") {
+                    appState.skipHookInstall()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+        }
+    }
+
+    private func shortenPath(_ path: String) -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        if path.hasPrefix(home) {
+            return "~" + path.dropFirst(home.count)
+        }
+        return path
     }
 }

@@ -1,3 +1,4 @@
+import AgentSpritesCore
 import AppKit
 import Foundation
 
@@ -193,6 +194,9 @@ final class CharacterManager {
     /// Callback when mappings are randomized (for UI refresh)
     var onMappingsRandomized: (() -> Void)?
 
+    /// Callback when packs are rescanned (for UI refresh)
+    var onPacksChanged: (() -> Void)?
+
     private init() {
         // Load or generate mapping seed
         if let savedSeed = UserDefaults.standard.object(forKey: Self.mappingSeedKey) as? UInt64 {
@@ -206,8 +210,7 @@ final class CharacterManager {
     }
 
     static var charactersDirectory: String {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".agentsprites/characters").path
+        AgentSpritesConstants.charactersDirectory.path
     }
 
     /// Scan for all available character packs
@@ -373,5 +376,19 @@ final class CharacterManager {
     /// Get character by ID directly
     func character(byId id: String) -> SpriteCharacter? {
         characters[id]
+    }
+
+    /// Rescan available packs (call after importing new packs)
+    func rescanPacks() {
+        scanAvailablePacks()
+        onPacksChanged?()
+    }
+
+    /// Select a newly imported pack
+    func selectNewlyImportedPack(_ packId: String) {
+        rescanPacks()
+        if availablePacks.contains(where: { $0.id == packId }) {
+            selectPack(packId)
+        }
     }
 }

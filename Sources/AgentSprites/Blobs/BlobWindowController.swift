@@ -171,7 +171,7 @@ final class BlobWindowController {
         tooltip.isOpaque = false
         tooltip.backgroundColor = .clear
         tooltip.hasShadow = false
-        tooltip.level = .floating
+        tooltip.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.maximumWindow)))
         tooltip.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
         tooltip.ignoresMouseEvents = true
 

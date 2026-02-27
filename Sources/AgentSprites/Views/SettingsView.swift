@@ -1,16 +1,222 @@
 import SwiftUI
 
-/// Available animation states for preview
+// MARK: - Settings Tabs
+
+enum SettingsTab: String, CaseIterable, Identifiable {
+    case general = "General"
+    case characters = "Characters"
+
+    var id: String { rawValue }
+
+    var icon: String {
+        switch self {
+        case .general: return "gearshape"
+        case .characters: return "person.crop.rectangle.stack"
+        }
+    }
+}
+
+// MARK: - Main Settings View
+
+struct SettingsView: View {
+    @ObservedObject var blobCoordinator: BlobCoordinator
+    @ObservedObject var appState: AppState
+    @State private var selectedTab: SettingsTab? = .general
+
+    var body: some View {
+        HStack(spacing: 0) {
+            // Sidebar
+            ZStack(alignment: .topLeading) {
+                VisualEffectView(material: .sidebar, blendingMode: .behindWindow)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(SettingsTab.allCases) { tab in
+                        SidebarRow(
+                            title: tab.rawValue,
+                            icon: tab.icon,
+                            isSelected: selectedTab == tab
+                        ) {
+                            selectedTab = tab
+                        }
+                    }
+                }
+                .padding(.top, 52) // Space for traffic lights
+                .padding(.horizontal, 12)
+            }
+            .frame(width: 200)
+
+            // Divider
+            Rectangle()
+                .fill(Color(nsColor: .separatorColor))
+                .frame(width: 1)
+
+            // Detail
+            detailView
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .background(Color(nsColor: .windowBackgroundColor))
+        }
+        .ignoresSafeArea()
+    }
+
+    @ViewBuilder
+    private var detailView: some View {
+        switch selectedTab {
+        case .general:
+            GeneralSettingsView(appState: appState, blobCoordinator: blobCoordinator)
+        case .characters:
+            CharacterSettingsView(blobCoordinator: blobCoordinator)
+        case .none:
+            Text("Select a category")
+                .foregroundColor(.secondary)
+        }
+    }
+}
+
+// MARK: - General Settings
+
+struct GeneralSettingsView: View {
+    @ObservedObject var appState: AppState
+    @ObservedObject var blobCoordinator: BlobCoordinator
+
+    var body: some View {
+        Form {
+            Section {
+                HStack {
+                    Label {
+                        Text(appState.hooksInstalled ? "Hooks are installed" : "Hooks not installed")
+                    } icon: {
+                        Circle()
+                            .fill(appState.hooksInstalled ? Color.green : Color.orange)
+                            .frame(width: 10, height: 10)
+                    }
+                    Spacer()
+                    Button(appState.hooksInstalled ? "Reinstall" : "Install") {
+                        appState.installHooks()
+                    }
+                }
+
+                if let cliPath = HookInstaller.bundledCLIPath {
+                    LabeledContent("CLI Path") {
+                        Text(shortenPath(cliPath))
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+            } header: {
+                Text("Claude Code Hooks")
+            }
+
+            #if DEBUG
+            Section {
+                Toggle("Show Ledge Overlay", isOn: $blobCoordinator.debugLedgesEnabled)
+            } header: {
+                Text("Debug")
+            } footer: {
+                Text("Visualize detected window ledges for sprite positioning")
+            }
+            #endif
+        }
+        .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .padding(.top, 20)
+    }
+
+    private func shortenPath(_ path: String) -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        if path.hasPrefix(home) {
+            return "~" + path.dropFirst(home.count)
+        }
+        return path
+    }
+}
+
+// MARK: - Character Settings
+
+struct CharacterSettingsView: View {
+    @ObservedObject var blobCoordinator: BlobCoordinator
+    @State private var previewState: PreviewState = .idle
+    @State private var showImportSheet = false
+
+    var body: some View {
+        Form {
+            Section {
+                ForEach(blobCoordinator.availablePacks) { pack in
+                    PackRowView(
+                        pack: pack,
+                        isSelected: blobCoordinator.selectedPackId == pack.id
+                    ) {
+                        blobCoordinator.selectedPackId = pack.id
+                    }
+                }
+
+                Button {
+                    showImportSheet = true
+                } label: {
+                    Label("Import Pack...", systemImage: "plus.circle")
+                }
+                .buttonStyle(.plain)
+                .foregroundColor(.accentColor)
+            } header: {
+                Text("Character Pack")
+            }
+
+            Section {
+                HStack {
+                    Text("Each session gets a unique color variant")
+                        .foregroundColor(.secondary)
+                    Spacer()
+                    Button("Randomize") {
+                        blobCoordinator.randomizeMappings()
+                    }
+                }
+            } header: {
+                Text("Colors")
+            }
+
+            Section {
+                VStack(alignment: .leading, spacing: 12) {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(PreviewState.allCases) { state in
+                                StateChip(
+                                    state: state,
+                                    isSelected: previewState == state
+                                ) {
+                                    previewState = state
+                                }
+                            }
+                        }
+                    }
+
+                    if let selectedPack = blobCoordinator.availablePacks.first(where: { $0.id == blobCoordinator.selectedPackId }) {
+                        CharacterPreviewGrid(
+                            pack: selectedPack,
+                            state: previewState.rawValue
+                        )
+                    }
+                }
+                .padding(.vertical, 4)
+            } header: {
+                Text("Preview")
+            }
+        }
+        .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .padding(.top, 20)
+        .sheet(isPresented: $showImportSheet) {
+            ImportPackView { packId in
+                CharacterManager.shared.selectNewlyImportedPack(packId)
+                blobCoordinator.selectedPackId = packId
+            }
+        }
+    }
+}
+
+// MARK: - Preview State
+
 enum PreviewState: String, CaseIterable, Identifiable {
-    case idle
-    case working
-    case moving
-    case waitingForInput
-    case waitingForPermission
-    case error
-    case done
-    case dragging
-    case falling
+    case idle, working, moving, waitingForInput, waitingForPermission, error, done, dragging, falling
 
     var id: String { rawValue }
 
@@ -29,95 +235,7 @@ enum PreviewState: String, CaseIterable, Identifiable {
     }
 }
 
-struct SettingsView: View {
-    @ObservedObject var blobCoordinator: BlobCoordinator
-    @State private var previewState: PreviewState = .idle
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        VStack(spacing: 0) {
-            // Header
-            HStack {
-                Text("Character Settings")
-                    .font(.headline)
-                Spacer()
-                Button(
-                    action: { dismiss() },
-                    label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundColor(.secondary)
-                    }
-                )
-                .buttonStyle(.plain)
-            }
-            .padding()
-            .background(Color(nsColor: .windowBackgroundColor))
-
-            Divider()
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    // Pack selection
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Character Pack")
-                            .font(.subheadline)
-                            .fontWeight(.medium)
-
-                        ForEach(blobCoordinator.availablePacks) { pack in
-                            PackRowView(
-                                pack: pack,
-                                isSelected: blobCoordinator.selectedPackId == pack.id
-                            ) {
-                                blobCoordinator.selectedPackId = pack.id
-                            }
-                        }
-                    }
-
-                    Divider()
-
-                    // State picker
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Preview State")
-                            .font(.subheadline)
-                            .fontWeight(.medium)
-
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: 6) {
-                                ForEach(PreviewState.allCases) { state in
-                                    StateChip(
-                                        state: state,
-                                        isSelected: previewState == state
-                                    ) {
-                                        previewState = state
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    Divider()
-
-                    // Character previews
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Preview")
-                            .font(.subheadline)
-                            .fontWeight(.medium)
-
-                        if let selectedPack = blobCoordinator.availablePacks.first(where: { $0.id == blobCoordinator.selectedPackId }) {
-                            CharacterPreviewGrid(
-                                pack: selectedPack,
-                                state: previewState.rawValue
-                            )
-                        }
-                    }
-                }
-                .padding()
-            }
-        }
-        .frame(width: 400, height: 500)
-        .background(Color(nsColor: .controlBackgroundColor))
-    }
-}
+// MARK: - Pack Row
 
 struct PackRowView: View {
     let pack: CharacterPack
@@ -132,7 +250,7 @@ struct PackRowView: View {
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(pack.name)
-                        .fontWeight(isSelected ? .medium : .regular)
+                        .foregroundColor(.primary)
 
                     Text(pack.isSingleCharacter ? "Hue rotation mode" : "\(pack.characterCount) characters")
                         .font(.caption)
@@ -141,14 +259,13 @@ struct PackRowView: View {
 
                 Spacer()
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(isSelected ? Color.accentColor.opacity(0.1) : Color.clear)
-            .cornerRadius(8)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
 }
+
+// MARK: - State Chip
 
 struct StateChip: View {
     let state: PreviewState
@@ -170,32 +287,87 @@ struct StateChip: View {
     }
 }
 
+// MARK: - Sidebar Row
+
+struct SidebarRow: View {
+    let title: String
+    let icon: String
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: icon)
+                    .font(.system(size: 14))
+                    .frame(width: 20)
+                Text(title)
+                    .font(.system(size: 13))
+                Spacer()
+            }
+            .padding(.vertical, 6)
+            .padding(.horizontal, 8)
+            .background(isSelected ? Color.accentColor.opacity(0.2) : Color.clear)
+            .foregroundColor(isSelected ? .accentColor : .primary)
+            .cornerRadius(6)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Visual Effect View
+
+struct VisualEffectView: NSViewRepresentable {
+    let material: NSVisualEffectView.Material
+    let blendingMode: NSVisualEffectView.BlendingMode
+
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = material
+        view.blendingMode = blendingMode
+        view.state = .active
+        return view
+    }
+
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+        nsView.material = material
+        nsView.blendingMode = blendingMode
+    }
+}
+
 // MARK: - Settings Window Controller
 
 @MainActor
-final class SettingsWindowController {
+final class SettingsWindowController: NSObject {
     static let shared = SettingsWindowController()
 
     private var window: NSWindow?
-    private var hostingController: NSHostingController<SettingsView>?
 
-    private init() {}
+    private override init() {
+        super.init()
+    }
 
-    func show(blobCoordinator: BlobCoordinator) {
+    func show(blobCoordinator: BlobCoordinator, appState: AppState) {
         if let existingWindow = window, existingWindow.isVisible {
             existingWindow.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
         }
 
-        let settingsView = SettingsView(blobCoordinator: blobCoordinator)
+        let settingsView = SettingsView(blobCoordinator: blobCoordinator, appState: appState)
         let hostingController = NSHostingController(rootView: settingsView)
-        self.hostingController = hostingController
 
         let window = NSWindow(contentViewController: hostingController)
-        window.title = "AgentSprites Settings"
-        window.styleMask = [.titled, .closable, .miniaturizable]
-        window.level = .floating
+        window.title = ""
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.titlebarSeparatorStyle = .none
+        window.isMovableByWindowBackground = true
+        window.backgroundColor = .windowBackgroundColor
+        window.setContentSize(NSSize(width: 650, height: 500))
+        window.minSize = NSSize(width: 500, height: 400)
+
         window.center()
         window.makeKeyAndOrderFront(nil)
 
@@ -206,6 +378,5 @@ final class SettingsWindowController {
     func close() {
         window?.close()
         window = nil
-        hostingController = nil
     }
 }

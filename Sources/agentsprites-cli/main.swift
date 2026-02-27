@@ -3,7 +3,7 @@ import AgentSpritesCore
 import os
 
 /// CLI tool called by Claude Code hooks
-/// Reads hook event JSON from stdin and forwards to the daemon via XPC
+/// Reads hook event JSON from stdin and sends to the app via Distributed Notifications
 
 private let logger = Logger(subsystem: "com.agentsprites.cli", category: "main")
 
@@ -301,44 +301,30 @@ func resolveParentBundleId() -> String? {
     return nil
 }
 
-// MARK: - XPC Helper
+// MARK: - Notification Helper
 
-/// Send session update to daemon, returns success
-func sendUpdate(daemon: AgentSpritesDaemonProtocol, request: SessionUpdateRequest) -> Bool {
-    let semaphore = DispatchSemaphore(value: 0)
-    var success = false
-
-    daemon.updateSession(request) { result in
-        success = result
-        semaphore.signal()
+/// Post a session event to the app via Distributed Notifications
+func postSessionEvent(_ event: SessionEvent) {
+    guard let eventJSON = event.toJSONString() else {
+        logger.error("Failed to encode session event to JSON")
+        return
     }
 
-    let timeout = DispatchTime.now() + .milliseconds(500)
-    if semaphore.wait(timeout: timeout) == .timedOut {
-        logger.warning("XPC call timed out")
-        return false
-    }
-
-    return success
+    DistributedNotificationCenter.default().postNotificationName(
+        AgentSpritesConstants.sessionEventNotification,
+        object: nil,
+        userInfo: ["eventJSON": eventJSON],
+        deliverImmediately: true
+    )
 }
 
-/// Create a session update request from hook event and metadata
-func createRequest(
-    from hookEvent: HookEvent,
-    tty: String? = nil,
-    bundleId: String? = nil,
-    summary: String? = nil,
-    gitBranch: String? = nil
-) -> SessionUpdateRequest {
-    SessionUpdateRequest(
-        sessionId: hookEvent.sessionId,
-        eventName: hookEvent.hookEventName,
-        workingDirectory: hookEvent.cwd,
-        tty: tty,
-        bundleId: bundleId,
-        summary: summary,
-        gitBranch: gitBranch,
-        notificationType: hookEvent.notificationType
+/// Post a session end notification to the app
+func postSessionEnd(sessionId: String) {
+    DistributedNotificationCenter.default().postNotificationName(
+        AgentSpritesConstants.sessionEndNotification,
+        object: nil,
+        userInfo: ["sessionId": sessionId],
+        deliverImmediately: true
     )
 }
 
@@ -349,16 +335,6 @@ func runBackgroundUpdate(hookEventJSON: String) {
     guard let jsonData = hookEventJSON.data(using: .utf8),
           let hookEvent = try? HookEvent.parse(from: jsonData) else {
         logger.error("Background: Failed to parse hook event")
-        return
-    }
-
-    // Connect to daemon
-    let connection = NSXPCConnection(machServiceName: AgentSpritesConstants.xpcServiceName, options: [])
-    connection.remoteObjectInterface = createDaemonInterface()
-    connection.resume()
-
-    guard let daemon = connection.remoteObjectProxyWithErrorHandler({ _ in }) as? AgentSpritesDaemonProtocol else {
-        connection.invalidate()
         return
     }
 
@@ -382,16 +358,14 @@ func runBackgroundUpdate(hookEventJSON: String) {
 
     logger.info("Background: sending metadata update")
 
-    let request = createRequest(
+    let event = SessionEvent(
         from: hookEvent,
         tty: tty,
         bundleId: bundleId,
         summary: summary,
         gitBranch: gitBranch
     )
-    _ = sendUpdate(daemon: daemon, request: request)
-
-    connection.invalidate()
+    postSessionEvent(event)
 }
 
 /// Spawn background process to do slow lookups
@@ -435,15 +409,6 @@ if args.count >= 3 && args[1] == "--background" {
 
 logger.info("[TIMING] \(timestamp(), privacy: .public) CLI started")
 
-// Post immediate notification directly to app (bypasses daemon for faster visual feedback)
-DistributedNotificationCenter.default().postNotificationName(
-    Notification.Name("com.agentsprites.hookStarted"),
-    object: nil,
-    userInfo: nil,
-    deliverImmediately: true
-)
-logger.info("[TIMING] \(timestamp(), privacy: .public) Posted hookStarted notification")
-
 // Read JSON from stdin
 let inputData = FileHandle.standardInput.readDataToEndOfFile()
 let stdinReadTime = Date()
@@ -470,56 +435,32 @@ do {
 let parseTime = Date()
 logger.info("[TIMING] \(timestamp(), privacy: .public) JSON parsed (+\(String(format: "%.1f", parseTime.timeIntervalSince(stdinReadTime) * 1000), privacy: .public)ms)")
 
-// Connect to daemon via XPC
-let connection = NSXPCConnection(machServiceName: AgentSpritesConstants.xpcServiceName, options: [])
-connection.remoteObjectInterface = createDaemonInterface()
-
-connection.interruptionHandler = {
-    logger.warning("XPC connection interrupted")
-}
-
-connection.invalidationHandler = {
-    logger.debug("XPC connection invalidated")
-}
-
-connection.resume()
-
-let xpcConnectTime = Date()
-logger.info("[TIMING] \(timestamp(), privacy: .public) XPC connection resumed (+\(String(format: "%.1f", xpcConnectTime.timeIntervalSince(parseTime) * 1000), privacy: .public)ms)")
-
-// Get proxy to daemon
-let daemon = connection.remoteObjectProxyWithErrorHandler { error in
-    fputs("XPC error: \(error.localizedDescription)\n", stderr)
-    exit(1)
-} as? AgentSpritesDaemonProtocol
-
-guard let daemon = daemon else {
-    fputs("Error: Could not get daemon proxy\n", stderr)
-    exit(1)
+// Handle SessionEnd separately - just post removal notification
+if hookEvent.hookEventName == "SessionEnd" {
+    postSessionEnd(sessionId: hookEvent.sessionId)
+    let totalTime = Date().timeIntervalSince(cliStartTime) * 1000
+    logger.info("[TIMING] \(timestamp(), privacy: .public) SessionEnd posted, total=\(String(format: "%.1f", totalTime), privacy: .public)ms")
+    exit(0)
 }
 
 // Check cache for TTY/bundleId (fast path)
 let cachedEntry = ProcessTreeCache.get(sessionId: hookEvent.sessionId)
 let cacheCheckTime = Date()
-logger.info("[TIMING] \(timestamp(), privacy: .public) Cache check done, hit=\(cachedEntry != nil, privacy: .public) (+\(String(format: "%.1f", cacheCheckTime.timeIntervalSince(xpcConnectTime) * 1000), privacy: .public)ms)")
+logger.info("[TIMING] \(timestamp(), privacy: .public) Cache check done, hit=\(cachedEntry != nil, privacy: .public) (+\(String(format: "%.1f", cacheCheckTime.timeIntervalSince(parseTime) * 1000), privacy: .public)ms)")
 
-// Send initial update immediately with cached values (or nil if not cached)
+// Post initial event immediately with cached values (or nil if not cached)
 let sendStartTime = Date()
-logger.info("[TIMING] \(timestamp(), privacy: .public) Sending XPC update: session=\(hookEvent.sessionId.prefix(8), privacy: .public), event=\(hookEvent.hookEventName, privacy: .public)")
+logger.info("[TIMING] \(timestamp(), privacy: .public) Posting notification: session=\(hookEvent.sessionId.prefix(8), privacy: .public), event=\(hookEvent.hookEventName, privacy: .public)")
 
-let initialRequest = createRequest(from: hookEvent, tty: cachedEntry?.tty, bundleId: cachedEntry?.bundleId)
-_ = sendUpdate(daemon: daemon, request: initialRequest)
+let initialEvent = SessionEvent(from: hookEvent, tty: cachedEntry?.tty, bundleId: cachedEntry?.bundleId)
+postSessionEvent(initialEvent)
 
 let sendEndTime = Date()
-logger.info("[TIMING] \(timestamp(), privacy: .public) XPC update complete (+\(String(format: "%.1f", sendEndTime.timeIntervalSince(sendStartTime) * 1000), privacy: .public)ms)")
-
-connection.invalidate()
+logger.info("[TIMING] \(timestamp(), privacy: .public) Notification posted (+\(String(format: "%.1f", sendEndTime.timeIntervalSince(sendStartTime) * 1000), privacy: .public)ms)")
 
 // Spawn background process for slow lookups (metadata, process tree if not cached)
 // This lets the main process exit immediately so Claude Code isn't blocked
-// Skip background spawn for SessionEnd - it doesn't need metadata and could race with removal
-if hookEvent.hookEventName != "SessionEnd",
-   let hookEventJSON = String(data: inputData, encoding: .utf8) {
+if let hookEventJSON = String(data: inputData, encoding: .utf8) {
     spawnBackgroundUpdate(hookEventJSON: hookEventJSON, executablePath: args[0])
 }
 

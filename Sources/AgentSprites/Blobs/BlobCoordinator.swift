@@ -456,10 +456,12 @@ final class BlobCoordinator: ObservableObject {
     /// Get bounding boxes for all active blobs (for debug overlay)
     private func getBlobBounds() -> [BlobBounds] {
         blobPhysics.map { id, physics in
-            BlobBounds(
+            let session = sessions.first { $0.id == id }
+            return BlobBounds(
                 sessionId: id,
                 position: physics.position,
-                size: CGSize(width: 64, height: 64)
+                size: CGSize(width: 64, height: 64),
+                status: session?.status
             )
         }
     }
@@ -521,8 +523,9 @@ final class BlobCoordinator: ObservableObject {
         let deltaTime = lastFrameTime > 0 ? now - lastFrameTime : 1.0 / 60.0
         lastFrameTime = now
 
-        // Get current window ledges (now multi-screen aware)
+        // Get current window ledges and walls
         let ledges = windowObserver.getLedges()
+        let walls = windowObserver.getWalls()
 
         // Collect all blob positions for avoidance behavior
         let allBlobPositions: [String: CGPoint] = blobPhysics.mapValues { $0.position }
@@ -540,12 +543,26 @@ final class BlobCoordinator: ObservableObject {
                 // Get positions of other blobs (exclude self)
                 let otherPositions = allBlobPositions.filter { $0.key != id }.map { $0.value }
 
-                // Check session status - don't wander when working
+                // Check if hovered or has message window
+                let isHovered = blobHovered[id] ?? false
+                let hasMessageWindow = messageWindows[id] != nil
+
+                // Don't wander when working, waiting for user, hovered, or showing message
                 let session = sessions.first { $0.id == id }
-                let shouldWander = session?.status != .working
+                let shouldWander: Bool
+                if isHovered || hasMessageWindow {
+                    shouldWander = false
+                } else {
+                    switch session?.status {
+                    case .working, .waitingForInput, .waitingForPermission:
+                        shouldWander = false
+                    default:
+                        shouldWander = true
+                    }
+                }
 
                 physics.groundY = screenBounds.minY
-                physics.update(deltaTime: CGFloat(deltaTime), screenBounds: screenBounds, ledges: ledges, otherBlobs: otherPositions, shouldWander: shouldWander)
+                physics.update(deltaTime: CGFloat(deltaTime), screenBounds: screenBounds, ledges: ledges, walls: walls, otherBlobs: otherPositions, shouldWander: shouldWander)
                 blobPhysics[id] = physics
             }
         }
@@ -584,7 +601,7 @@ final class BlobCoordinator: ObservableObject {
             // Update window
             window.update(
                 image: animator.currentImage,
-                facingRight: animator.facingRight && ,
+                facingRight: animator.facingRight,
                 screenPosition: physics.position,
                 hueRotation: hueRotation,
                 surfaceRotation: surfaceRotation
