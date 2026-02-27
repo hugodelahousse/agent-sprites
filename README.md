@@ -153,6 +153,10 @@ make format
 swift test
 ```
 
+## Acknowledgments
+
+- Inspired by [peon-ping](https://github.com/nicekiwi/peon-ping)
+
 ## License
 
 MIT
