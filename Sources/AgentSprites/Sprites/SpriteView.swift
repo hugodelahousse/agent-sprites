@@ -38,9 +38,8 @@ struct SpriteView: View {
 
 #Preview {
     HStack(spacing: 20) {
-        SpriteView(image: CharacterManager.shared.character(forIndex: 0)?.animation(for: "idle")?.frame(at: 0), facingRight: true, size: CGSize(width: 64, height: 64))
-        SpriteView(image: CharacterManager.shared.character(forIndex: 0)?.animation(for: "working")?.frame(at: 0), facingRight: false, size: CGSize(width: 64, height: 64))
         SpriteView(image: nil, facingRight: true, size: CGSize(width: 64, height: 64))
+        SpriteView(image: nil, facingRight: false, size: CGSize(width: 64, height: 64))
     }
     .padding()
     .background(Color.black)

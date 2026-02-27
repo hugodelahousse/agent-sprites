@@ -191,7 +191,10 @@ struct CharacterSettingsView: View {
 
                     if let selectedPack = spriteCoordinator.availablePacks.first(where: { $0.id == spriteCoordinator.selectedPackId }) {
                         CharacterPreviewGrid(
-                            pack: selectedPack,
+                            characters: selectedPack.isSingleCharacter
+                                ? [CharacterManager.shared.character(forIndex: 0)].compactMap { $0 }
+                                : CharacterManager.shared.availableCharacters.compactMap { CharacterManager.shared.character(byId: $0) },
+                            isSingleCharacter: selectedPack.isSingleCharacter,
                             state: previewState.rawValue
                         )
                     }

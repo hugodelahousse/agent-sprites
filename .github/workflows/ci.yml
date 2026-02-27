@@ -10,12 +10,12 @@ on:
 jobs:
   build:
     name: Build & Test
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
       - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_15.4.app
+        run: sudo xcode-select -s /Applications/Xcode_26.0.1.app
 
       - name: Build
         run: swift build -c release
@@ -27,14 +27,14 @@ jobs:
     name: Create Release
     needs: build
     if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: macos-14
+    runs-on: macos-15
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
 
       - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_15.4.app
+        run: sudo xcode-select -s /Applications/Xcode_26.0.1.app
 
       - name: Build release
         run: make release
