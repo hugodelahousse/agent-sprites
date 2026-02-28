@@ -301,31 +301,73 @@ func resolveParentBundleId() -> String? {
     return nil
 }
 
-// MARK: - Notification Helper
+// MARK: - IPC
 
-/// Post a session event to the app via Distributed Notifications
-func postSessionEvent(_ event: SessionEvent) {
-    guard let eventJSON = event.toJSONString() else {
-        logger.error("Failed to encode session event to JSON")
-        return
+/// IPC provider for sending events to the app.
+/// Uses DistributedNotificationCenter on macOS (reliable, no server needed),
+/// with socket-based fallback available for cross-platform use.
+#if canImport(AppKit)
+private let ipcProvider: IPCProvider = {
+    /// Dual IPC: post via both DistributedNotificationCenter (primary, reliable)
+    /// and socket (secondary, cross-platform). App can listen on either.
+    final class DualIPCProvider: IPCProvider, @unchecked Sendable {
+        private let socketIPC = SocketIPCProvider()
+
+        func postSessionEvent(_ event: SessionEvent) throws {
+            // Primary: DistributedNotificationCenter (always works on macOS)
+            guard let eventJSON = event.toJSONString() else { return }
+            DistributedNotificationCenter.default().postNotificationName(
+                AgentSpritesConstants.sessionEventNotification,
+                object: nil,
+                userInfo: ["eventJSON": eventJSON],
+                deliverImmediately: true
+            )
+            // Secondary: also post via socket (for cross-platform testing)
+            try? socketIPC.postSessionEvent(event)
+        }
+
+        func postSessionEnd(sessionId: String) throws {
+            DistributedNotificationCenter.default().postNotificationName(
+                AgentSpritesConstants.sessionEndNotification,
+                object: nil,
+                userInfo: ["sessionId": sessionId],
+                deliverImmediately: true
+            )
+            try? socketIPC.postSessionEnd(sessionId: sessionId)
+        }
+
+        func observeEvents(
+            onSessionEvent: @escaping @Sendable (SessionEvent) -> Void,
+            onSessionEnd: @escaping @Sendable (String) -> Void
+        ) {
+            // CLI doesn't observe
+        }
+
+        func stopObserving() {}
     }
+    return DualIPCProvider()
+}()
+#else
+// Non-macOS: use socket IPC only
+private let ipcProvider: IPCProvider = SocketIPCProvider()
+#endif
 
-    DistributedNotificationCenter.default().postNotificationName(
-        AgentSpritesConstants.sessionEventNotification,
-        object: nil,
-        userInfo: ["eventJSON": eventJSON],
-        deliverImmediately: true
-    )
+/// Post a session event to the app
+func postSessionEvent(_ event: SessionEvent) {
+    do {
+        try ipcProvider.postSessionEvent(event)
+    } catch {
+        logger.error("Failed to post session event: \(error.localizedDescription, privacy: .public)")
+    }
 }
 
 /// Post a session end notification to the app
 func postSessionEnd(sessionId: String) {
-    DistributedNotificationCenter.default().postNotificationName(
-        AgentSpritesConstants.sessionEndNotification,
-        object: nil,
-        userInfo: ["sessionId": sessionId],
-        deliverImmediately: true
-    )
+    do {
+        try ipcProvider.postSessionEnd(sessionId: sessionId)
+    } catch {
+        logger.error("Failed to post session end: \(error.localizedDescription, privacy: .public)")
+    }
 }
 
 // MARK: - Background Mode
