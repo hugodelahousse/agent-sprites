@@ -4,53 +4,11 @@ import SwiftUI
 import AgentSpritesCore
 import os.log
 
-/// Thread-safe boolean flag for cross-thread synchronization (e.g. CVDisplayLink callback → main thread)
-private final class AtomicBool: @unchecked Sendable {
-    private var lock = os_unfair_lock()
-    private var _value: Bool
-
-    init(_ value: Bool) { _value = value }
-
-    var value: Bool {
-        get {
-            os_unfair_lock_lock(&lock)
-            defer { os_unfair_lock_unlock(&lock) }
-            return _value
-        }
-        set {
-            os_unfair_lock_lock(&lock)
-            _value = newValue
-            os_unfair_lock_unlock(&lock)
-        }
-    }
-}
-
 private func timestamp() -> String {
     let now = Date()
     let formatter = DateFormatter()
     formatter.dateFormat = "HH:mm:ss.SSS"
     return formatter.string(from: now)
-}
-
-/// Returns the screen containing the given point, or main screen as fallback
-private func screenContaining(_ point: CGPoint) -> NSScreen? {
-    // Find the screen that contains this point
-    for screen in NSScreen.screens {
-        if screen.frame.contains(point) {
-            return screen
-        }
-    }
-    // Fallback to main screen
-    return NSScreen.main
-}
-
-/// Returns the combined bounds of all screens
-private func allScreensBounds() -> CGRect {
-    var bounds = CGRect.zero
-    for screen in NSScreen.screens {
-        bounds = bounds.union(screen.frame)
-    }
-    return bounds
 }
 
 /// Coordinates all character sprites and their animation
@@ -82,11 +40,11 @@ final class SpriteCoordinator: ObservableObject {
     private var messageWindows: [String: MessageWindowController] = [:]
     private var dismissedMessages: [String: SessionStatus] = [:]  // Track dismissed messages by status
     private var autoDismissTimers: [String: Timer] = [:]  // Auto-dismiss timers for waitingForInput
-    private var displayLink: CVDisplayLink?
-    private var lastFrameTime: CFTimeInterval = 0
     private var sessions: [SessionState] = []
     private var pendingRenderTime: Date?  // Track when session update happened, for timing logs
-    private let isProcessingFrame = AtomicBool(false)  // Thread-safe flag: CVDisplayLink reads, main thread writes
+
+    private let frameScheduler: any FrameScheduler
+    private let screenProvider: any ScreenProvider
 
     private let terminalFocuser = TerminalFocuser()
     private let windowObserver = WindowObserver.shared
@@ -116,7 +74,12 @@ final class SpriteCoordinator: ObservableObject {
         }
     }
 
-    init() {
+    init(
+        frameScheduler: any FrameScheduler = MacFrameScheduler(),
+        screenProvider: any ScreenProvider = MacScreenProvider()
+    ) {
+        self.frameScheduler = frameScheduler
+        self.screenProvider = screenProvider
         self.isEnabled = UserDefaults.standard.bool(forKey: Self.enabledKey)
 
         // Pre-load characters
@@ -135,7 +98,6 @@ final class SpriteCoordinator: ObservableObject {
             self?.getSpriteBounds() ?? []
         }
 
-        setupDisplayLink()
         // Animation will start when sessions are added (via updateAnimationState)
     }
 
@@ -162,9 +124,7 @@ final class SpriteCoordinator: ObservableObject {
     }
 
     deinit {
-        if let displayLink = displayLink {
-            CVDisplayLinkStop(displayLink)
-        }
+        frameScheduler.stop()
     }
 
     // MARK: - Public API
@@ -209,7 +169,7 @@ final class SpriteCoordinator: ObservableObject {
     /// Start or stop animation based on whether there are active sprites
     private func updateAnimationState() {
         let shouldAnimate = isEnabled && !spriteWindows.isEmpty
-        let isAnimating = displayLink.map { CVDisplayLinkIsRunning($0) } ?? false
+        let isAnimating = frameScheduler.isRunning
 
         if shouldAnimate && !isAnimating {
             startAnimation()
@@ -222,10 +182,10 @@ final class SpriteCoordinator: ObservableObject {
 
     private func createSprite(for session: SessionState) {
         // Pick a random screen to spawn on
-        let screens = NSScreen.screens
-        guard !screens.isEmpty else { return }
-        let screen = screens.randomElement() ?? screens[0]
-        let screenBounds = screen.visibleFrame
+        let displays = screenProvider.getAllDisplays()
+        guard !displays.isEmpty else { return }
+        let display = displays.randomElement() ?? displays[0]
+        let screenBounds = display.visibleFrame
 
         let margin: CGFloat = 80
         let startX = CGFloat.random(in: (screenBounds.minX + margin)...(screenBounds.maxX - margin))
@@ -381,10 +341,12 @@ final class SpriteCoordinator: ObservableObject {
         logger.debug("Drag started for session: \(sessionId, privacy: .public)")
     }
 
+    private var lastFrameTime: Double = 0
+
     private func handleDragUpdate(sessionId: String, screenPoint: CGPoint) {
         guard spriteDragging[sessionId] == true else { return }
 
-        let now = CACurrentMediaTime()
+        let now = frameScheduler.currentTime()
         let deltaTime = lastFrameTime > 0 ? now - lastFrameTime : 1.0 / 60.0
 
         // Center the sprite on the cursor
@@ -492,49 +454,24 @@ final class SpriteCoordinator: ObservableObject {
 
     // MARK: - Private - Animation
 
-    private func setupDisplayLink() {
-        var displayLink: CVDisplayLink?
-        CVDisplayLinkCreateWithActiveCGDisplays(&displayLink)
-        self.displayLink = displayLink
-
-        guard let displayLink = displayLink else { return }
-
-        let callback: CVDisplayLinkOutputCallback = { _, _, _, _, _, userInfo -> CVReturn in
-            let coordinator = Unmanaged<SpriteCoordinator>.fromOpaque(userInfo!).takeUnretainedValue()
-
-            // Skip frame if previous frame still processing (reduces CPU when main thread is busy)
-            guard !coordinator.isProcessingFrame.value else { return kCVReturnSuccess }
-
-            DispatchQueue.main.async {
-                coordinator.animationFrame()
-            }
-
-            return kCVReturnSuccess
-        }
-
-        let userInfo = Unmanaged.passUnretained(self).toOpaque()
-        CVDisplayLinkSetOutputCallback(displayLink, callback, userInfo)
-    }
-
     private func startAnimation() {
-        guard let displayLink = displayLink else { return }
-        CVDisplayLinkStart(displayLink)
-        lastFrameTime = CACurrentMediaTime()
+        frameScheduler.start { [weak self] deltaTime in
+            DispatchQueue.main.async {
+                self?.animationFrame(deltaTime: deltaTime)
+            }
+        }
+        lastFrameTime = frameScheduler.currentTime()
         logger.debug("Animation started")
     }
 
     private func stopAnimation() {
-        guard let displayLink = displayLink else { return }
-        CVDisplayLinkStop(displayLink)
+        frameScheduler.stop()
         logger.debug("Animation stopped")
     }
 
     // swiftlint:disable:next cyclomatic_complexity
-    private func animationFrame() {
+    private func animationFrame(deltaTime: Double) {
         guard isEnabled else { return }
-
-        isProcessingFrame.value = true
-        defer { isProcessingFrame.value = false }
 
         // Log time from session update to render
         if let pendingTime = pendingRenderTime {
@@ -543,9 +480,7 @@ final class SpriteCoordinator: ObservableObject {
             pendingRenderTime = nil
         }
 
-        let now = CACurrentMediaTime()
-        let deltaTime = lastFrameTime > 0 ? now - lastFrameTime : 1.0 / 60.0
-        lastFrameTime = now
+        lastFrameTime = frameScheduler.currentTime()
 
         // Get current window ledges and walls
         let ledges = windowObserver.getLedges()
@@ -561,8 +496,8 @@ final class SpriteCoordinator: ObservableObject {
 
             if !isDragging {
                 // Get the screen containing this sprite
-                guard let spriteScreen = screenContaining(physics.position) else { continue }
-                let screenBounds = spriteScreen.visibleFrame
+                guard let display = screenProvider.getDisplay(containing: physics.position) else { continue }
+                let screenBounds = display.visibleFrame
 
                 // Get positions of other sprites (exclude self)
                 let otherPositions = allSpritePositions.filter { $0.key != id }.map { $0.value }

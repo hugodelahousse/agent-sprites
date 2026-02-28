@@ -143,15 +143,14 @@ final class AppState: ObservableObject {
     }
 }
 
-/// View model managing session state via distributed notifications from CLI
+/// View model managing session state via IPC from CLI
 @MainActor
 final class SessionViewModel: ObservableObject {
     @Published var sessions: [SessionState] = []
     @Published var isConnected = true  // Always "connected" since we use notifications
 
     private let sessionManager = SessionManager()
-    private var eventObserver: NSObjectProtocol?
-    private var endObserver: NSObjectProtocol?
+    private let ipcProvider: any IPCProvider
     private let terminalFocuser = TerminalFocuser()
     private let logger = Logger(subsystem: "com.agentsprites.app", category: "SessionViewModel")
 
@@ -170,18 +169,14 @@ final class SessionViewModel: ObservableObject {
         return "person.crop.circle"
     }
 
-    init() {
+    init(ipcProvider: any IPCProvider = MacIPCProvider()) {
+        self.ipcProvider = ipcProvider
         setupSessionManager()
         observeNotifications()
     }
 
     deinit {
-        if let observer = eventObserver {
-            DistributedNotificationCenter.default().removeObserver(observer)
-        }
-        if let observer = endObserver {
-            DistributedNotificationCenter.default().removeObserver(observer)
-        }
+        ipcProvider.stopObserving()
     }
 
     private func setupSessionManager() {
@@ -196,61 +191,29 @@ final class SessionViewModel: ObservableObject {
     }
 
     private func observeNotifications() {
-        // Listen for session events from CLI
-        eventObserver = DistributedNotificationCenter.default().addObserver(
-            forName: AgentSpritesConstants.sessionEventNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] notification in
-            // Extract userInfo before entering async context (Notification is not Sendable)
-            let userInfo = notification.userInfo
-            Task { @MainActor [weak self] in
-                self?.handleSessionEvent(userInfo: userInfo)
+        ipcProvider.observeEvents(
+            onSessionEvent: { [weak self] event in
+                Task { @MainActor [weak self] in
+                    self?.handleSessionEvent(event)
+                }
+            },
+            onSessionEnd: { [weak self] sessionId in
+                Task { @MainActor [weak self] in
+                    self?.handleSessionEnd(sessionId: sessionId)
+                }
             }
-        }
-
-        // Listen for session end notifications from CLI
-        endObserver = DistributedNotificationCenter.default().addObserver(
-            forName: AgentSpritesConstants.sessionEndNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] notification in
-            // Extract userInfo before entering async context (Notification is not Sendable)
-            let userInfo = notification.userInfo
-            Task { @MainActor [weak self] in
-                self?.handleSessionEnd(userInfo: userInfo)
-            }
-        }
+        )
     }
 
-    private func handleSessionEvent(userInfo: [AnyHashable: Any]?) {
-        let startTime = Date()
-        logger.info("[TIMING] \(timestamp(), privacy: .public) App received session event notification")
-
-        guard let userInfo,
-              let eventJSON = userInfo["eventJSON"] as? String,
-              let event = SessionEvent.fromJSONString(eventJSON) else {
-            logger.warning("Failed to parse session event from notification")
-            return
-        }
-
-        let parseTime = Date().timeIntervalSince(startTime) * 1000
-        logger.info("[TIMING] \(timestamp(), privacy: .public) Event parsed (+\(String(format: "%.1f", parseTime), privacy: .public)ms), processing...")
-
+    private func handleSessionEvent(_ event: SessionEvent) {
+        logger.info("[TIMING] \(timestamp(), privacy: .public) App received session event")
         Task {
             await sessionManager.processEvent(event)
         }
     }
 
-    private func handleSessionEnd(userInfo: [AnyHashable: Any]?) {
+    private func handleSessionEnd(sessionId: String) {
         logger.info("[TIMING] \(timestamp(), privacy: .public) App received session end notification")
-
-        guard let userInfo,
-              let sessionId = userInfo["sessionId"] as? String else {
-            logger.warning("Failed to parse session ID from end notification")
-            return
-        }
-
         Task {
             await sessionManager.removeSession(sessionId: sessionId)
         }
