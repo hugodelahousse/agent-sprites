@@ -40,6 +40,13 @@ let package = Package(
             ]
         ),
 
+        // Windows prototype (builds on all platforms, functional on Windows only)
+        .executableTarget(
+            name: "AgentSpritesWindowsProto",
+            dependencies: ["AgentSpritesCore"],
+            path: "Sources/AgentSpritesWindowsProto"
+        ),
+
         // Tests
         .testTarget(
             name: "AgentSpritesCoreTests",

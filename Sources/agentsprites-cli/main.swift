@@ -3,7 +3,7 @@ import AgentSpritesCore
 import os
 
 /// CLI tool called by Claude Code hooks
-/// Reads hook event JSON from stdin and sends to the app via Distributed Notifications
+/// Reads hook event JSON from stdin and sends to the app via IPC (Distributed Notifications on macOS, sockets elsewhere)
 
 private let logger = Logger(subsystem: "com.agentsprites.cli", category: "main")
 
