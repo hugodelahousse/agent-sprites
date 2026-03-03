@@ -622,10 +622,22 @@ final class SpriteCoordinator: ObservableObject {
             let hueRotation = spriteHueRotations[id] ?? 0
             let surfaceRotation = physics.surfaceRotation
 
+            // Flip facing direction for surfaces where rotation inverts the walking direction.
+            // Left walls rotate by π/2 (90° CW), which maps local "right" to screen "down",
+            // so the facing must be inverted for the walk animation to match movement direction.
+            // Ceiling rotates by π (180°), which also inverts the horizontal direction.
+            var effectiveFacingRight = animator.facingRight
+            switch physics.currentSurface {
+            case .leftWall, .windowWall(_, .left), .ceiling:
+                effectiveFacingRight = !effectiveFacingRight
+            default:
+                break
+            }
+
             // Update window
             window.update(
                 image: animator.currentImage,
-                facingRight: animator.facingRight,
+                facingRight: effectiveFacingRight,
                 screenPosition: physics.position,
                 hueRotation: hueRotation,
                 surfaceRotation: surfaceRotation
