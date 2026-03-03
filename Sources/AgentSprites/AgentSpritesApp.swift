@@ -11,9 +11,9 @@ private func timestamp() -> String {
 
 @main
 struct AgentSpritesApp: App {
+    @StateObject private var appState = AppState()
     @StateObject private var viewModel = SessionViewModel()
     @StateObject private var spriteCoordinator = SpriteCoordinator()
-    @StateObject private var appState = AppState()
 
     var body: some Scene {
         MenuBarExtra {
