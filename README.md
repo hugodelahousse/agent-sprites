@@ -34,7 +34,7 @@ Think of it as a "desktop pet" that keeps you informed at a glance, without inte
 
 ## Installation
 
-Download the latest release from [GitHub Releases](https://github.com/anthropics/agent-sprites/releases) and unzip it.
+Download the latest release from [GitHub Releases](https://github.com/hugodelahousse/agent-sprites/releases) and unzip it.
 
 Since the app isn't signed with an Apple Developer certificate, macOS will block it. To allow it, run:
 
@@ -122,7 +122,7 @@ See `CharacterPacks/README.md` for the full format specification.
 
 ## How It Works
 
-AgentSprites uses Claude Code's [hooks system](https://docs.anthropic.com/en/docs/claude-code/hooks) to receive events:
+AgentSprites uses Claude Code's [hooks system](https://code.claude.com/docs/en/hooks) to receive events:
 
 ```
 ┌─────────────────┐     stdin JSON       ┌─────────────────┐
@@ -159,7 +159,7 @@ swift test
 
 ## Acknowledgments
 
-- Inspired by [peon-ping](https://github.com/nicekiwi/peon-ping)
+- Inspired by [peon-ping](https://github.com/PeonPing/peon-ping)
 
 ## License
 
