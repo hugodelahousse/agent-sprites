@@ -265,11 +265,13 @@ struct SpritePhysics: Sendable {
         case .floor:
             // Pick target on opposite side
             if dx > 0 {
-                // Other sprite is to the right, go left
-                targetPosition = CGFloat.random(in: (screenBounds.minX + 60)...(position.x - 20))
+                let lo = screenBounds.minX + 60
+                let hi = position.x - 20
+                if lo < hi { targetPosition = CGFloat.random(in: lo...hi) }
             } else {
-                // Other sprite is to the left, go right
-                targetPosition = CGFloat.random(in: (position.x + 20)...(screenBounds.maxX - 60))
+                let lo = position.x + 20
+                let hi = screenBounds.maxX - 60
+                if lo < hi { targetPosition = CGFloat.random(in: lo...hi) }
             }
         case .ledge:
             // Stay on ledge but move away
@@ -282,18 +284,24 @@ struct SpritePhysics: Sendable {
             }
         case .ceiling:
             if dx > 0 {
-                targetPosition = CGFloat.random(in: (screenBounds.minX + 60)...(position.x - 20))
+                let lo = screenBounds.minX + 60
+                let hi = position.x - 20
+                if lo < hi { targetPosition = CGFloat.random(in: lo...hi) }
             } else {
-                targetPosition = CGFloat.random(in: (position.x + 20)...(screenBounds.maxX - 60))
+                let lo = position.x + 20
+                let hi = screenBounds.maxX - 60
+                if lo < hi { targetPosition = CGFloat.random(in: lo...hi) }
             }
         case .leftWall, .rightWall, .windowWall:
             let dy = avoidPos.y - position.y
             if dy > 0 {
-                // Other sprite is above, go down
-                targetPosition = CGFloat.random(in: (groundY + 50)...(position.y - 20))
+                let lo = groundY + 50
+                let hi = position.y - 20
+                if lo < hi { targetPosition = CGFloat.random(in: lo...hi) }
             } else {
-                // Other sprite is below, go up
-                targetPosition = CGFloat.random(in: (position.y + 20)...(screenBounds.maxY - 100))
+                let lo = position.y + 20
+                let hi = screenBounds.maxY - 100
+                if lo < hi { targetPosition = CGFloat.random(in: lo...hi) }
             }
         case .falling:
             break
@@ -682,7 +690,11 @@ struct SpritePhysics: Sendable {
         case .idling, .stuckIdling:
             velocity.y = 0
             if hasIdleExpired() {
-                targetPosition = CGFloat.random(in: (groundY + 50)...(screenBounds.maxY - 100))
+                let lo = groundY + 50
+                let hi = screenBounds.maxY - 100
+                if lo < hi {
+                    targetPosition = CGFloat.random(in: lo...hi)
+                }
                 wanderState = .walking
             }
         case .walking:
