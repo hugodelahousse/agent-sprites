@@ -22,6 +22,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
 struct SettingsView: View {
     @ObservedObject var spriteCoordinator: SpriteCoordinator
     @ObservedObject var appState: AppState
+    @ObservedObject var updateChecker: UpdateChecker
     @State private var selectedTab: SettingsTab? = .general
 
     var body: some View {
@@ -63,7 +64,7 @@ struct SettingsView: View {
     private var detailView: some View {
         switch selectedTab {
         case .general:
-            GeneralSettingsView(appState: appState, spriteCoordinator: spriteCoordinator)
+            GeneralSettingsView(appState: appState, spriteCoordinator: spriteCoordinator, updateChecker: updateChecker)
         case .characters:
             CharacterSettingsView(spriteCoordinator: spriteCoordinator)
         case .none:
@@ -78,6 +79,7 @@ struct SettingsView: View {
 struct GeneralSettingsView: View {
     @ObservedObject var appState: AppState
     @ObservedObject var spriteCoordinator: SpriteCoordinator
+    @ObservedObject var updateChecker: UpdateChecker
     @State private var accessibilityGranted = AXIsProcessTrusted()
 
     var body: some View {
@@ -139,6 +141,50 @@ struct GeneralSettingsView: View {
                 }
             } header: {
                 Text("Accessibility")
+            }
+
+            Section {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Current version: \(updateChecker.currentVersion)")
+                        if let lastCheck = updateChecker.lastCheckDate {
+                            Text("Last checked: \(lastCheck, style: .relative) ago")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    Spacer()
+                    if updateChecker.isChecking {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Button("Check Now") {
+                            Task {
+                                await updateChecker.checkForUpdates()
+                            }
+                        }
+                    }
+                }
+
+                if let update = updateChecker.availableUpdate {
+                    HStack {
+                        Label {
+                            Text("v\(update.version) available")
+                        } icon: {
+                            Circle()
+                                .fill(Color.blue)
+                                .frame(width: 10, height: 10)
+                        }
+                        Spacer()
+                        Button("Download") {
+                            NSWorkspace.shared.open(update.downloadURL)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                    }
+                }
+            } header: {
+                Text("Updates")
             }
 
             #if DEBUG
@@ -393,14 +439,14 @@ final class SettingsWindowController: NSObject {
         super.init()
     }
 
-    func show(spriteCoordinator: SpriteCoordinator, appState: AppState) {
+    func show(spriteCoordinator: SpriteCoordinator, appState: AppState, updateChecker: UpdateChecker) {
         if let existingWindow = window, existingWindow.isVisible {
             existingWindow.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
         }
 
-        let settingsView = SettingsView(spriteCoordinator: spriteCoordinator, appState: appState)
+        let settingsView = SettingsView(spriteCoordinator: spriteCoordinator, appState: appState, updateChecker: updateChecker)
         let hostingController = NSHostingController(rootView: settingsView)
 
         let window = NSWindow(contentViewController: hostingController)

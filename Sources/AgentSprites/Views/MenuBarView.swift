@@ -5,6 +5,7 @@ struct MenuBarView: View {
     @ObservedObject var viewModel: SessionViewModel
     @ObservedObject var spriteCoordinator: SpriteCoordinator
     @ObservedObject var appState: AppState
+    @ObservedObject var updateChecker: UpdateChecker
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -17,7 +18,8 @@ struct MenuBarView: View {
                     action: {
                         SettingsWindowController.shared.show(
                             spriteCoordinator: spriteCoordinator,
-                            appState: appState
+                            appState: appState,
+                            updateChecker: updateChecker
                         )
                     },
                     label: {
@@ -30,6 +32,12 @@ struct MenuBarView: View {
             }
             .padding(.horizontal, 12)
             .padding(.top, 8)
+
+            // Update available banner
+            if let update = updateChecker.availableUpdate {
+                UpdateBannerView(update: update, updateChecker: updateChecker)
+                    .padding(.horizontal, 12)
+            }
 
             // Hook installation prompt (only shown when needed)
             if appState.showingHookPrompt {
@@ -96,6 +104,54 @@ struct MenuBarView: View {
             .padding(.bottom, 8)
         }
         .frame(width: 300)
+        .task {
+            updateChecker.checkOnLaunch()
+        }
+    }
+}
+
+// MARK: - Update Banner
+
+struct UpdateBannerView: View {
+    let update: AppRelease
+    @ObservedObject var updateChecker: UpdateChecker
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Image(systemName: "arrow.down.circle.fill")
+                    .foregroundColor(.blue)
+                Text("v\(update.version) available")
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                Spacer()
+                Button {
+                    updateChecker.dismissUpdate()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+
+            HStack {
+                Button("Download") {
+                    NSWorkspace.shared.open(update.downloadURL)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+
+                Button("Release Notes") {
+                    NSWorkspace.shared.open(update.releaseURL)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+        }
+        .padding(10)
+        .background(Color.blue.opacity(0.1))
+        .cornerRadius(8)
     }
 }
 

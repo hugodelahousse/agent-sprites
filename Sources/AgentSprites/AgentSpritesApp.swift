@@ -14,10 +14,16 @@ struct AgentSpritesApp: App {
     @StateObject private var appState = AppState()
     @StateObject private var viewModel = SessionViewModel()
     @StateObject private var spriteCoordinator = SpriteCoordinator()
+    @StateObject private var updateChecker = UpdateChecker()
 
     var body: some Scene {
         MenuBarExtra {
-            MenuBarView(viewModel: viewModel, spriteCoordinator: spriteCoordinator, appState: appState)
+            MenuBarView(
+                viewModel: viewModel,
+                spriteCoordinator: spriteCoordinator,
+                appState: appState,
+                updateChecker: updateChecker
+            )
         } label: {
             Label("AgentSprites", systemImage: viewModel.menuBarIcon)
         }
