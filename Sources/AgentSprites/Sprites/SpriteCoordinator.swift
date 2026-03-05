@@ -196,7 +196,8 @@ final class SpriteCoordinator: ObservableObject {
     private func setupSceneCallbacks(_ controller: SpriteSceneController) {
         let scene = controller.scene
 
-        scene.onFrameUpdate = { [weak self] currentTime in
+        scene.onFrameUpdate = { [weak self, weak controller] currentTime in
+            controller?.didRenderFrame()
             self?.animationFrame(currentTime: currentTime)
         }
 
