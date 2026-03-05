@@ -28,6 +28,7 @@ final class SpriteSceneController {
     let panel: NSPanel
     private let skView: TransparentSKView
     let scene: SpriteScene
+    private var pendingReveal = false
 
     private let logger = Logger(subsystem: "com.agentsprites.app", category: "SpriteSceneController")
 
@@ -100,9 +101,22 @@ final class SpriteSceneController {
         let hasSprites = scene.spriteCount > 0
         setPaused(!hasSprites)
         if hasSprites && !panel.isVisible {
+            // Show panel fully transparent, then reveal after SpriteKit
+            // renders its first clear frame (via didRenderFrame callback)
+            panel.alphaValue = 0
             panel.orderFront(nil)
+            pendingReveal = true
         } else if !hasSprites && panel.isVisible {
             panel.orderOut(nil)
+        }
+    }
+
+    /// Called from the scene's frame update callback to reveal the panel
+    /// after SpriteKit has rendered at least one clear frame
+    func didRenderFrame() {
+        if pendingReveal {
+            pendingReveal = false
+            panel.alphaValue = 1
         }
     }
 
