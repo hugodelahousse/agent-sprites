@@ -10,6 +10,13 @@ CONFIG="${1:-debug}"  # debug or release
 
 echo "Bundling AgentSprites.app ($CONFIG)..."
 
+# Get version from git tag (strip leading 'v')
+GIT_VERSION=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')
+if [ -z "$GIT_VERSION" ]; then
+    GIT_VERSION="0.0.0"
+fi
+echo "  - Version: $GIT_VERSION"
+
 # Paths
 APP_EXECUTABLE="$BUILD_DIR/$CONFIG/AgentSprites"
 CLI_EXECUTABLE="$BUILD_DIR/$CONFIG/agentsprites-cli"
@@ -72,7 +79,7 @@ cp "$SCRIPT_DIR/AppIcon.icns" "$RESOURCES/"
 echo "  - App icons: AppIcon.icon, AppIcon.icns"
 
 # Create Info.plist
-cat > "$CONTENTS/Info.plist" << 'EOF'
+cat > "$CONTENTS/Info.plist" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -86,9 +93,9 @@ cat > "$CONTENTS/Info.plist" << 'EOF'
     <key>CFBundleDisplayName</key>
     <string>AgentSprites</string>
     <key>CFBundleVersion</key>
-    <string>1.0</string>
+    <string>${GIT_VERSION}</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0</string>
+    <string>${GIT_VERSION}</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>LSMinimumSystemVersion</key>
