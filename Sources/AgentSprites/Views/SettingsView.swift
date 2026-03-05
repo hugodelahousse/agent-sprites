@@ -1,3 +1,4 @@
+import ApplicationServices
 import SwiftUI
 
 // MARK: - Settings Tabs
@@ -77,6 +78,7 @@ struct SettingsView: View {
 struct GeneralSettingsView: View {
     @ObservedObject var appState: AppState
     @ObservedObject var spriteCoordinator: SpriteCoordinator
+    @State private var accessibilityGranted = AXIsProcessTrusted()
 
     var body: some View {
         Form {
@@ -107,6 +109,38 @@ struct GeneralSettingsView: View {
                 Text("Claude Code Hooks")
             }
 
+            Section {
+                if accessibilityGranted {
+                    Label {
+                        Text("Accessibility enabled")
+                    } icon: {
+                        Circle()
+                            .fill(Color.green)
+                            .frame(width: 10, height: 10)
+                    }
+                } else {
+                    HStack(spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundColor(.orange)
+                            .font(.system(size: 14))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Accessibility not enabled")
+                                .font(.system(size: 12, weight: .medium))
+                            Text("Sprites react to window changes with a delay. Grant accessibility access for instant response.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        Spacer()
+                        Button("Grant Access") {
+                            let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
+                            _ = AXIsProcessTrustedWithOptions(options)
+                        }
+                    }
+                }
+            } header: {
+                Text("Accessibility")
+            }
+
             #if DEBUG
             Section {
                 Toggle("Show Ledge Overlay", isOn: $spriteCoordinator.debugLedgesEnabled)
@@ -120,6 +154,15 @@ struct GeneralSettingsView: View {
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
         .padding(.top, 20)
+        .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) { _ in
+            let granted = AXIsProcessTrusted()
+            if granted != accessibilityGranted {
+                accessibilityGranted = granted
+                if granted {
+                    WindowObserver.shared.startObserving()
+                }
+            }
+        }
     }
 
     private func shortenPath(_ path: String) -> String {

@@ -18,6 +18,7 @@ CONTENTS="$APP_BUNDLE/Contents"
 MACOS="$CONTENTS/MacOS"
 HELPERS="$CONTENTS/Helpers"
 RESOURCES="$CONTENTS/Resources"
+HASH_FILE="$CONTENTS/.executable-hashes"
 
 # Check executables exist
 if [ ! -f "$APP_EXECUTABLE" ]; then
@@ -32,8 +33,20 @@ if [ ! -f "$CLI_EXECUTABLE" ]; then
     exit 1
 fi
 
+# Compute current hashes of source executables
+CURRENT_HASHES="$(shasum "$APP_EXECUTABLE" "$CLI_EXECUTABLE")"
+
+# Check if executables changed since last bundle.
+# Re-signing invalidates macOS accessibility grants, so we skip it when possible.
+NEEDS_RESIGN=true
+if [ -f "$HASH_FILE" ]; then
+    PREV_HASHES="$(cat "$HASH_FILE")"
+    if [ "$CURRENT_HASHES" = "$PREV_HASHES" ]; then
+        NEEDS_RESIGN=false
+    fi
+fi
+
 # Create bundle structure
-rm -rf "$APP_BUNDLE"
 mkdir -p "$MACOS"
 mkdir -p "$HELPERS"
 mkdir -p "$RESOURCES"
@@ -94,8 +107,12 @@ cat > "$CONTENTS/Info.plist" << 'EOF'
 </plist>
 EOF
 
-# Sign the bundle (ad-hoc for local use)
-codesign --force --deep --sign - "$APP_BUNDLE" 2>/dev/null || true
+# Only re-sign if executables changed (preserves accessibility grants across rebuilds)
+if [ "$NEEDS_RESIGN" = true ]; then
+    codesign --force --deep --sign - "$APP_BUNDLE" 2>/dev/null || true
+    echo "$CURRENT_HASHES" > "$HASH_FILE"
+    echo "  - Re-signed bundle"
+fi
 
 echo "Created: $APP_BUNDLE"
 echo "  - Main app: $MACOS/AgentSprites"

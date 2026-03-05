@@ -17,6 +17,7 @@ final class LedgeDebugOverlay {
     private var isVisible = false
     private let windowObserver = WindowObserver.shared
     private var updateTimer: Timer?
+    private var windowChangeObserver: NSObjectProtocol?
 
     /// Callback to get current sprite bounds from coordinator
     var getSpriteBounds: (() -> [SpriteBounds])?
@@ -62,6 +63,10 @@ final class LedgeDebugOverlay {
         isVisible = false
         updateTimer?.invalidate()
         updateTimer = nil
+        if let windowChangeObserver {
+            NotificationCenter.default.removeObserver(windowChangeObserver)
+        }
+        windowChangeObserver = nil
     }
 
     private func createWindow(screen: NSScreen) -> NSWindow {
@@ -85,8 +90,20 @@ final class LedgeDebugOverlay {
     private func startUpdating() {
         updateLedges()
 
-        // Update every 500ms while visible
+        // Update on a fallback timer (for polling mode without accessibility)
         updateTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.isVisible else { return }
+                self.updateLedges()
+            }
+        }
+
+        // Also update immediately when AXObserver detects window changes
+        windowChangeObserver = NotificationCenter.default.addObserver(
+            forName: WindowObserver.windowsDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self, self.isVisible else { return }
                 self.updateLedges()

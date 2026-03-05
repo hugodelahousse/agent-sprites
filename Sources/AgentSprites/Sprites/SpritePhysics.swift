@@ -12,6 +12,13 @@ enum SpriteSurface: Sendable, Equatable {
     case falling         // Not on any surface
 }
 
+/// Wander state for goal-directed movement
+enum WanderState: Sendable {
+    case walking       // Moving toward target
+    case idling        // Resting at destination
+    case stuckIdling   // Target became unreachable, idling before picking new one
+}
+
 /// Physics simulation for sprites with gravity and ledge support
 struct SpritePhysics: Sendable {
     var position: CGPoint
@@ -36,7 +43,9 @@ struct SpritePhysics: Sendable {
 
     // Wander behavior
     private var targetPosition: CGFloat
-    private var lastTargetChange = Date()
+    private var wanderState: WanderState = .idling
+    private var idleStartTime: Date?
+    private var idleInterval: TimeInterval = Self.randomIdleInterval()
 
     // Physics constants
     private static let gravity: CGFloat = -800
@@ -44,13 +53,18 @@ struct SpritePhysics: Sendable {
     private static let climbSpeed: CGFloat = 30
     private static let maxFallSpeed: CGFloat = -600
     private static let maxThrowSpeed: CGFloat = 400
-    private static let wanderInterval: TimeInterval = 4.0
     private static let edgeMargin: CGFloat = 32  // Distance from screen edge to trigger wall climb
+    private static let arrivalThreshold: CGFloat = 5
+
+    private static func randomIdleInterval() -> TimeInterval {
+        TimeInterval.random(in: 60...120)
+    }
 
     init(x: CGFloat, groundY: CGFloat) {
         self.position = CGPoint(x: x, y: groundY)
         self.groundY = groundY
         self.targetPosition = x
+        self.idleStartTime = Date()
     }
 
     var isMoving: Bool {
@@ -87,12 +101,12 @@ struct SpritePhysics: Sendable {
     var surfaceRotation: Double {
         switch currentSurface {
         case .leftWall:
-            return .pi / 2  // 90 degrees - facing right while climbing
+            return -.pi / 2  // -90 degrees (CW) - feet toward left wall, face pointing right
         case .rightWall:
-            return -.pi / 2  // -90 degrees - facing left while climbing
+            return .pi / 2  // 90 degrees (CCW) - feet toward right wall, face pointing left
         case .windowWall(_, let side):
-            // Window walls: left side = facing right, right side = facing left
-            return side == .left ? .pi / 2 : -.pi / 2
+            // Window walls: feet toward the wall surface
+            return side == .left ? -.pi / 2 : .pi / 2
         case .ceiling:
             return .pi  // 180 degrees - upside down
         default:
@@ -285,7 +299,7 @@ struct SpritePhysics: Sendable {
             break
         }
 
-        lastTargetChange = Date()
+        wanderState = .walking
     }
 
     private mutating func updateFalling(deltaTime: CGFloat, screenBounds: CGRect, ledges: [WindowObserver.Ledge]) {
@@ -318,6 +332,7 @@ struct SpritePhysics: Sendable {
                 currentLedgeY = groundY
                 currentLedgeMinX = screenBounds.minX
                 currentLedgeMaxX = screenBounds.maxX
+                startIdling(stuck: true)
             }
         }
 
@@ -332,6 +347,7 @@ struct SpritePhysics: Sendable {
         currentLedgeY = ledge.y
         currentLedgeMinX = ledge.minX
         currentLedgeMaxX = ledge.maxX
+        startIdling(stuck: true)
     }
 
     // swiftlint:disable:next cyclomatic_complexity function_body_length
@@ -429,7 +445,7 @@ struct SpritePhysics: Sendable {
         currentWallMinY = nil
         currentWallMaxY = nil
         targetPosition = screenBounds.maxY - 60  // Target near top
-        lastTargetChange = Date()
+        wanderState = .walking
     }
 
     private mutating func startClimbingWindowWall(wall: WindowObserver.Wall, screenBounds: CGRect) {
@@ -442,7 +458,7 @@ struct SpritePhysics: Sendable {
         currentWallMinY = wall.minY
         currentWallMaxY = wall.maxY
         targetPosition = wall.maxY - 10  // Target near top of wall
-        lastTargetChange = Date()
+        wanderState = .walking
     }
 
     private mutating func updateScreenWallClimbing(deltaTime: CGFloat, screenBounds: CGRect, ledges: [WindowObserver.Ledge], shouldWander: Bool) {
@@ -481,6 +497,7 @@ struct SpritePhysics: Sendable {
             currentWallMinY = nil
             currentWallMaxY = nil
             targetPosition = position.x
+            startIdling(stuck: false)
         }
     }
 
@@ -530,6 +547,7 @@ struct SpritePhysics: Sendable {
             currentWallMinY = nil
             currentWallMaxY = nil
             targetPosition = position.x
+            startIdling(stuck: false)
             return
         }
 
@@ -560,30 +578,32 @@ struct SpritePhysics: Sendable {
             currentWallMinY = nil
             currentWallMaxY = nil
             targetPosition = position.x
+            startIdling(stuck: true)
         }
     }
 
     private mutating func updateWindowWallWander(wallMinY: CGFloat, wallMaxY: CGFloat) {
-        // Occasionally pick new vertical target within wall bounds
-        if Date().timeIntervalSince(lastTargetChange) > Self.wanderInterval {
-            let margin: CGFloat = 20
-            let minTarget = wallMinY + margin
-            let maxTarget = wallMaxY - margin
-            if maxTarget > minTarget {
-                targetPosition = CGFloat.random(in: minTarget...maxTarget)
-            } else {
-                targetPosition = (wallMinY + wallMaxY) / 2
-            }
-            lastTargetChange = Date()
-        }
-
-        // Move toward target
-        let toTarget = targetPosition - position.y
-        if abs(toTarget) > 5 {
-            let moveDir: CGFloat = toTarget > 0 ? 1 : -1
-            velocity.y = moveDir * Self.climbSpeed
-        } else {
+        switch wanderState {
+        case .idling, .stuckIdling:
             velocity.y = 0
+            if hasIdleExpired() {
+                let margin: CGFloat = 20
+                let minTarget = wallMinY + margin
+                let maxTarget = wallMaxY - margin
+                if maxTarget > minTarget {
+                    targetPosition = CGFloat.random(in: minTarget...maxTarget)
+                } else {
+                    targetPosition = (wallMinY + wallMaxY) / 2
+                }
+                wanderState = .walking
+            }
+        case .walking:
+            let toTarget = targetPosition - position.y
+            if abs(toTarget) > Self.arrivalThreshold {
+                velocity.y = (toTarget > 0 ? 1 : -1) * Self.climbSpeed
+            } else {
+                startIdling(stuck: false)
+            }
         }
     }
 
@@ -591,7 +611,7 @@ struct SpritePhysics: Sendable {
         currentSurface = .ceiling
         velocity = CGPoint(x: fromLeftWall ? Self.moveSpeed : -Self.moveSpeed, y: 0)
         targetPosition = CGFloat.random(in: (screenBounds.minX + 100)...(screenBounds.maxX - 100))
-        lastTargetChange = Date()
+        wanderState = .walking
     }
 
     private mutating func updateCeiling(deltaTime: CGFloat, screenBounds: CGRect, ledges: [WindowObserver.Ledge], shouldWander: Bool) {
@@ -616,6 +636,7 @@ struct SpritePhysics: Sendable {
             currentSurface = .leftWall
             velocity = CGPoint(x: 0, y: -Self.climbSpeed)
             targetPosition = groundY + 100
+            wanderState = .walking
             return
         }
 
@@ -625,6 +646,7 @@ struct SpritePhysics: Sendable {
             currentSurface = .rightWall
             velocity = CGPoint(x: 0, y: -Self.climbSpeed)
             targetPosition = groundY + 100
+            wanderState = .walking
             return
         }
 
@@ -645,11 +667,10 @@ struct SpritePhysics: Sendable {
             // Check if we're horizontally over this ledge
             if ledge.contains(x: position.x) {
                 // Random chance to drop (so they don't always drop immediately)
-                if Bool.random() && Date().timeIntervalSince(lastTargetChange) > 2.0 {
+                if Bool.random() && wanderState != .walking {
                     // Drop to this ledge
                     currentSurface = .falling
                     velocity = CGPoint(x: 0, y: -50)  // Small initial downward velocity
-                    lastTargetChange = Date()
                     return
                 }
             }
@@ -657,54 +678,71 @@ struct SpritePhysics: Sendable {
     }
 
     private mutating func updateWallWander(deltaTime: CGFloat, screenBounds: CGRect) {
-        // Occasionally pick new vertical target
-        if Date().timeIntervalSince(lastTargetChange) > Self.wanderInterval {
-            targetPosition = CGFloat.random(in: (groundY + 50)...(screenBounds.maxY - 100))
-            lastTargetChange = Date()
-        }
-
-        // Move toward target
-        let toTarget = targetPosition - position.y
-        if abs(toTarget) > 5 {
-            let moveDir: CGFloat = toTarget > 0 ? 1 : -1
-            velocity.y = moveDir * Self.climbSpeed
-        } else {
+        switch wanderState {
+        case .idling, .stuckIdling:
             velocity.y = 0
+            if hasIdleExpired() {
+                targetPosition = CGFloat.random(in: (groundY + 50)...(screenBounds.maxY - 100))
+                wanderState = .walking
+            }
+        case .walking:
+            let toTarget = targetPosition - position.y
+            if abs(toTarget) > Self.arrivalThreshold {
+                velocity.y = (toTarget > 0 ? 1 : -1) * Self.climbSpeed
+            } else {
+                startIdling(stuck: false)
+            }
         }
     }
 
     private mutating func updateCeilingWander(deltaTime: CGFloat, screenBounds: CGRect) {
-        // Occasionally pick new horizontal target
-        if Date().timeIntervalSince(lastTargetChange) > Self.wanderInterval {
-            targetPosition = CGFloat.random(in: (screenBounds.minX + 100)...(screenBounds.maxX - 100))
-            lastTargetChange = Date()
-        }
-
-        // Move toward target
-        let toTarget = targetPosition - position.x
-        if abs(toTarget) > 5 {
-            let moveDir: CGFloat = toTarget > 0 ? 1 : -1
-            velocity.x = moveDir * Self.moveSpeed
-        } else {
+        switch wanderState {
+        case .idling, .stuckIdling:
             velocity.x = 0
+            if hasIdleExpired() {
+                targetPosition = CGFloat.random(in: (screenBounds.minX + 100)...(screenBounds.maxX - 100))
+                wanderState = .walking
+            }
+        case .walking:
+            let toTarget = targetPosition - position.x
+            if abs(toTarget) > Self.arrivalThreshold {
+                velocity.x = (toTarget > 0 ? 1 : -1) * Self.moveSpeed
+            } else {
+                startIdling(stuck: false)
+            }
         }
     }
 
     private mutating func updateWander(deltaTime: CGFloat, screenBounds: CGRect, ledges: [WindowObserver.Ledge]) {
-        // Occasionally pick new wander target
-        if Date().timeIntervalSince(lastTargetChange) > Self.wanderInterval {
-            pickNewTarget(screenBounds: screenBounds, ledges: ledges)
-            lastTargetChange = Date()
-        }
-
-        // Move toward target
-        let toTarget = targetPosition - position.x
-        if abs(toTarget) > 5 {
-            let moveDir: CGFloat = toTarget > 0 ? 1 : -1
-            velocity.x = moveDir * Self.moveSpeed
-        } else {
+        switch wanderState {
+        case .idling, .stuckIdling:
             velocity.x = 0
+            if hasIdleExpired() {
+                pickNewTarget(screenBounds: screenBounds, ledges: ledges)
+                wanderState = .walking
+            }
+        case .walking:
+            let toTarget = targetPosition - position.x
+            if abs(toTarget) > Self.arrivalThreshold {
+                velocity.x = (toTarget > 0 ? 1 : -1) * Self.moveSpeed
+            } else {
+                startIdling(stuck: false)
+            }
         }
+    }
+
+    // MARK: - Idle Helpers
+
+    private mutating func startIdling(stuck: Bool) {
+        wanderState = stuck ? .stuckIdling : .idling
+        idleStartTime = Date()
+        idleInterval = Self.randomIdleInterval()
+        velocity = .zero
+    }
+
+    private func hasIdleExpired() -> Bool {
+        guard let start = idleStartTime else { return true }
+        return Date().timeIntervalSince(start) >= idleInterval
     }
 
     private mutating func pickNewTarget(screenBounds: CGRect, ledges: [WindowObserver.Ledge]) {

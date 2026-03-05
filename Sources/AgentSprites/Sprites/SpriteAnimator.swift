@@ -79,10 +79,14 @@ struct SpriteAnimator {
         let frameDuration = 1.0 / fps
 
         if frameTime >= frameDuration {
-            frameTime -= frameDuration
+            // Use truncatingRemainder to prevent frameTime accumulation when
+            // render FPS is lower than animation FPS (e.g. during 4fps throttle).
+            // This correctly skips frames rather than queuing them for rapid playback.
+            let framesAdvanced = Int(frameTime / frameDuration)
+            frameTime = frameTime.truncatingRemainder(dividingBy: frameDuration)
 
             let frameCount = animation?.frameCount ?? 1
-            currentFrame = (currentFrame + 1) % frameCount
+            currentFrame = (currentFrame + framesAdvanced) % frameCount
             return true
         }
 

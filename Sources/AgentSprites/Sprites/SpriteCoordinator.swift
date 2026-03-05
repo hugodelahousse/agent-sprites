@@ -1,29 +1,8 @@
 import AppKit
+import SpriteKit
 import os
 import SwiftUI
 import AgentSpritesCore
-import os.log
-
-/// Thread-safe boolean flag for cross-thread synchronization (e.g. CVDisplayLink callback → main thread)
-private final class AtomicBool: @unchecked Sendable {
-    private var lock = os_unfair_lock()
-    private var _value: Bool
-
-    init(_ value: Bool) { _value = value }
-
-    var value: Bool {
-        get {
-            os_unfair_lock_lock(&lock)
-            defer { os_unfair_lock_unlock(&lock) }
-            return _value
-        }
-        set {
-            os_unfair_lock_lock(&lock)
-            _value = newValue
-            os_unfair_lock_unlock(&lock)
-        }
-    }
-}
 
 private func timestamp() -> String {
     let now = Date()
@@ -34,23 +13,7 @@ private func timestamp() -> String {
 
 /// Returns the screen containing the given point, or main screen as fallback
 private func screenContaining(_ point: CGPoint) -> NSScreen? {
-    // Find the screen that contains this point
-    for screen in NSScreen.screens {
-        if screen.frame.contains(point) {
-            return screen
-        }
-    }
-    // Fallback to main screen
-    return NSScreen.main
-}
-
-/// Returns the combined bounds of all screens
-private func allScreensBounds() -> CGRect {
-    var bounds = CGRect.zero
-    for screen in NSScreen.screens {
-        bounds = bounds.union(screen.frame)
-    }
-    return bounds
+    NSScreen.screens.first { $0.frame.contains(point) } ?? NSScreen.main
 }
 
 /// Coordinates all character sprites and their animation
@@ -71,22 +34,39 @@ final class SpriteCoordinator: ObservableObject {
     }
 
     private let logger = Logger(subsystem: "com.agentsprites.app", category: "SpriteCoordinator")
-    private var spriteWindows: [String: SpriteWindowController] = [:]
+
+    // Per-screen scene controllers (replaces per-sprite windows)
+    private var sceneControllers: [CGDirectDisplayID: SpriteSceneController] = [:]
+    private var spriteScreenAssignment: [String: CGDirectDisplayID] = [:]
+
+    // Per-sprite state (unchanged)
     private var spritePhysics: [String: SpritePhysics] = [:]
     private var spriteAnimators: [String: SpriteAnimator] = [:]
     private var spriteCharacters: [String: SpriteCharacter] = [:]
     private var spriteHueRotations: [String: Double] = [:]
+    private var spriteShaders: [String: SKShader] = [:]
     private var nextSpriteIndex: Int = 0
     private var spriteHovered: [String: Bool] = [:]
     private var spriteDragging: [String: Bool] = [:]
+
+    // Session info for tooltips (moved from SpriteWindowController)
+    private var spriteSessionInfo: [String: SessionInfo] = [:]
+    private var spriteHasMessageWindow: [String: Bool] = [:]
+
+    // Message windows (unchanged)
     private var messageWindows: [String: MessageWindowController] = [:]
-    private var dismissedMessages: [String: SessionStatus] = [:]  // Track dismissed messages by status
-    private var autoDismissTimers: [String: Timer] = [:]  // Auto-dismiss timers for waitingForInput
-    private var displayLink: CVDisplayLink?
+    private var dismissedMessages: [String: SessionStatus] = [:]
+    private var autoDismissTimers: [String: Timer] = [:]
+
+    // Tooltip (shared, repositioned per-sprite)
+    private var tooltipWindow: NSPanel?
+    private var tooltipSessionId: String?
+
+    // Animation — driven by SpriteKit's update loop (no CVDisplayLink)
     private var lastFrameTime: CFTimeInterval = 0
     private var sessions: [SessionState] = []
-    private var pendingRenderTime: Date?  // Track when session update happened, for timing logs
-    private let isProcessingFrame = AtomicBool(false)  // Thread-safe flag: CVDisplayLink reads, main thread writes
+    private var pendingRenderTime: Date?
+    private var lastUpdateFrameId: UInt64 = 0  // Dedup multiple scenes calling per frame
 
     private let terminalFocuser = TerminalFocuser()
     private let windowObserver = WindowObserver.shared
@@ -102,12 +82,10 @@ final class SpriteCoordinator: ObservableObject {
         }
     }
 
-    /// Available character packs
     var availablePacks: [CharacterPack] {
         CharacterManager.shared.availablePacks
     }
 
-    /// Currently selected character pack ID
     @Published var selectedPackId: String = "" {
         didSet {
             guard oldValue != selectedPackId, !selectedPackId.isEmpty else { return }
@@ -116,54 +94,139 @@ final class SpriteCoordinator: ObservableObject {
         }
     }
 
+    /// Session info for tooltip display
+    struct SessionInfo {
+        var name: String = ""
+        var status: String = ""
+        var directory: String = ""
+        var summary: String?
+        var gitBranch: String?
+    }
+
     init() {
         self.isEnabled = UserDefaults.standard.bool(forKey: Self.enabledKey)
 
-        // Pre-load characters
         _ = CharacterManager.shared
         self.selectedPackId = CharacterManager.shared.selectedPackId ?? ""
 
-        // Set up callback for when mappings are randomized
         CharacterManager.shared.onMappingsRandomized = { [weak self] in
             Task { @MainActor in
                 self?.reloadAllSprites()
             }
         }
 
-        // Set up callback for debug overlay to get sprite bounds
         ledgeDebugOverlay.getSpriteBounds = { [weak self] in
             self?.getSpriteBounds() ?? []
         }
 
-        setupDisplayLink()
-        // Animation will start when sessions are added (via updateAnimationState)
+        observeScreenChanges()
+        windowObserver.startObserving()
     }
 
-    /// Randomize folder-to-character/hue mappings
     func randomizeMappings() {
         CharacterManager.shared.randomizeMappings()
     }
 
-    /// Reload all sprites with new characters (called when pack changes)
     private func reloadAllSprites() {
         let currentSessions = sessions
-        // Remove all existing sprites
-        for id in spriteWindows.keys {
+        // Remove all sprites from all scenes
+        for id in spritePhysics.keys {
             removeSprite(forSessionId: id)
         }
         nextSpriteIndex = 0
+        SpriteTextureCache.shared.clear()
         // Recreate sprites for current sessions
         for session in currentSessions {
             createSprite(for: session)
         }
-        // Restart animation loop (it was stopped when sprites were removed)
         updateAnimationState()
         logger.info("Reloaded all sprites with new character pack: \(self.selectedPackId, privacy: .public)")
     }
 
-    deinit {
-        if let displayLink = displayLink {
-            CVDisplayLinkStop(displayLink)
+    // MARK: - Screen Management
+
+    private func observeScreenChanges() {
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.handleScreenChange()
+            }
+        }
+    }
+
+    private func handleScreenChange() {
+        let currentScreens = Set(NSScreen.screens.map { $0.displayID })
+        let existingScreens = Set(sceneControllers.keys)
+
+        // Remove controllers for disconnected screens
+        for displayID in existingScreens.subtracting(currentScreens) {
+            // Move any sprites on this screen to another screen
+            let spritesOnScreen = spriteScreenAssignment.filter { $0.value == displayID }.map { $0.key }
+            for sessionId in spritesOnScreen {
+                if let newScreen = NSScreen.main {
+                    reassignSprite(sessionId: sessionId, to: newScreen)
+                }
+            }
+            sceneControllers[displayID]?.close()
+            sceneControllers.removeValue(forKey: displayID)
+        }
+
+        // Update frames for existing screens
+        for screen in NSScreen.screens {
+            sceneControllers[screen.displayID]?.updateFrame(for: screen)
+        }
+    }
+
+    /// Get or create a scene controller for the given screen
+    private func ensureSceneController(for screen: NSScreen) -> SpriteSceneController {
+        let displayID = screen.displayID
+        if let existing = sceneControllers[displayID] {
+            return existing
+        }
+
+        let controller = SpriteSceneController(screen: screen)
+        setupSceneCallbacks(controller)
+        sceneControllers[displayID] = controller
+        if isEnabled {
+            controller.show()
+        }
+        return controller
+    }
+
+    private func setupSceneCallbacks(_ controller: SpriteSceneController) {
+        let scene = controller.scene
+
+        scene.onFrameUpdate = { [weak self] currentTime in
+            self?.animationFrame(currentTime: currentTime)
+        }
+
+        scene.onSpriteClick = { [weak self] sessionId in
+            Task { @MainActor in
+                await self?.handleSpriteClick(sessionId: sessionId)
+            }
+        }
+
+        scene.onSpriteHoverEnter = { [weak self] sessionId in
+            self?.handleHoverEnter(sessionId: sessionId)
+        }
+
+        scene.onSpriteHoverExit = { [weak self] sessionId in
+            self?.handleHoverExit(sessionId: sessionId)
+        }
+
+        scene.onSpriteDragStart = { [weak self] sessionId in
+            self?.handleDragStart(sessionId: sessionId)
+        }
+
+        scene.onSpriteDragUpdate = { [weak self] sessionId, screenPoint in
+            self?.handleDragUpdate(sessionId: sessionId, screenPoint: screenPoint)
+        }
+
+        scene.onSpriteDragEnd = { [weak self] sessionId in
+            self?.handleDragEnd(sessionId: sessionId)
         }
     }
 
@@ -179,7 +242,7 @@ final class SpriteCoordinator: ObservableObject {
             return
         }
 
-        let currentIds = Set(spriteWindows.keys)
+        let currentIds = Set(spritePhysics.keys)
         let newIds = Set(newSessions.map { $0.id })
 
         // Remove sprites for sessions that no longer exist
@@ -189,39 +252,34 @@ final class SpriteCoordinator: ObservableObject {
 
         // Add sprites for new sessions
         for session in newSessions {
-            if spriteWindows[session.id] == nil {
+            if spritePhysics[session.id] == nil {
                 logger.info("[TIMING] \(timestamp(), privacy: .public) Creating new sprite for session \(session.id.prefix(8), privacy: .public)")
                 createSprite(for: session)
             } else {
-                // Update session info for existing sprite
                 updateSpriteInfo(for: session)
             }
         }
 
-        // Start/stop animation based on whether we have sprites
         updateAnimationState()
 
-        pendingRenderTime = Date()  // Track for animation frame timing
+        pendingRenderTime = Date()
         let elapsed = Date().timeIntervalSince(startTime) * 1000
         logger.info("[TIMING] \(timestamp(), privacy: .public) SpriteCoordinator.updateSessions complete (+\(String(format: "%.1f", elapsed), privacy: .public)ms)")
     }
 
-    /// Start or stop animation based on whether there are active sprites
     private func updateAnimationState() {
-        let shouldAnimate = isEnabled && !spriteWindows.isEmpty
-        let isAnimating = displayLink.map { CVDisplayLinkIsRunning($0) } ?? false
-
-        if shouldAnimate && !isAnimating {
-            startAnimation()
-        } else if !shouldAnimate && isAnimating {
-            stopAnimation()
+        for (_, controller) in sceneControllers {
+            if isEnabled {
+                controller.updatePauseState()
+            } else {
+                controller.setPaused(true)
+            }
         }
     }
 
     // MARK: - Private - Sprite Management
 
     private func createSprite(for session: SessionState) {
-        // Pick a random screen to spawn on
         let screens = NSScreen.screens
         guard !screens.isEmpty else { return }
         let screen = screens.randomElement() ?? screens[0]
@@ -231,14 +289,14 @@ final class SpriteCoordinator: ObservableObject {
         let startX = CGFloat.random(in: (screenBounds.minX + margin)...(screenBounds.maxX - margin))
         let groundY = screenBounds.minY
 
-        // Spawn from top of screen - they'll fall down
+        // Spawn from top of screen
         let startY = screenBounds.maxY - 60
 
         var physics = SpritePhysics(x: startX, groundY: groundY)
-        physics.position = CGPoint(x: startX, y: startY)  // Start at top
+        physics.position = CGPoint(x: startX, y: startY)
         spritePhysics[session.id] = physics
 
-        // Get character for this sprite (by path hash or sequential index)
+        // Get character
         let character: SpriteCharacter
         if CharacterManager.shared.usesRandomCharacter {
             guard let char = CharacterManager.shared.character(forPath: session.workingDirectory) else {
@@ -260,39 +318,20 @@ final class SpriteCoordinator: ObservableObject {
         let animator = SpriteAnimator(character: character)
         spriteAnimators[session.id] = animator
 
-        // Calculate hue rotation based on directory path hash (only used if in hueRotate mode)
         let hueRotation = CharacterManager.shared.usesHueRotation ? hueForPath(session.workingDirectory) : 0
         spriteHueRotations[session.id] = hueRotation
 
+        // Create shader if hue rotation is needed
+        if hueRotation != 0 {
+            spriteShaders[session.id] = HueRotationShader.shader(hueAngleDegrees: hueRotation)
+        }
+
         spriteHovered[session.id] = false
         spriteDragging[session.id] = false
+        spriteHasMessageWindow[session.id] = false
 
-        let window = SpriteWindowController(sessionId: session.id)
-
-        window.onClick = { [weak self] in
-            Task { @MainActor in
-                await self?.handleSpriteClick(sessionId: session.id)
-            }
-        }
-
-        window.onHoverChanged = { [weak self] isHovered in
-            self?.spriteHovered[session.id] = isHovered
-        }
-
-        window.onDragStart = { [weak self] in
-            self?.handleDragStart(sessionId: session.id)
-        }
-
-        window.onDragUpdate = { [weak self] screenPoint in
-            self?.handleDragUpdate(sessionId: session.id, screenPoint: screenPoint)
-        }
-
-        window.onDragEnd = { [weak self] in
-            self?.handleDragEnd(sessionId: session.id)
-        }
-
-        // Set session info for hover tooltip
-        window.sessionInfo = SpriteWindowController.SessionInfo(
+        // Store session info
+        spriteSessionInfo[session.id] = SessionInfo(
             name: session.displayName,
             status: session.status.displayName,
             directory: session.workingDirectory,
@@ -300,24 +339,40 @@ final class SpriteCoordinator: ObservableObject {
             gitBranch: session.gitBranch
         )
 
-        spriteWindows[session.id] = window
-        window.show()
+        // Add sprite node to the scene for this screen
+        let controller = ensureSceneController(for: screen)
+        spriteScreenAssignment[session.id] = screen.displayID
+
+        // Get initial texture
+        if let image = animator.currentImage {
+            let texture = SpriteTextureCache.shared.texture(for: image)
+            let localPos = globalToLocal(physics.position, screen: screen)
+            controller.scene.addSprite(sessionId: session.id, texture: texture, size: CGSize(width: 64, height: 64))
+            controller.scene.updateSprite(
+                sessionId: session.id,
+                texture: texture,
+                position: localPos,
+                facingRight: true,
+                surfaceRotation: 0,
+                shader: spriteShaders[session.id]
+            )
+        }
+
+        controller.updatePauseState()
 
         logger.debug("Created sprite for session: \(session.id, privacy: .public)")
     }
 
     private func hueForPath(_ path: String) -> Double {
-        // Use deterministic djb2 hash with seed for consistent but randomizable color
         var hash: UInt64 = 5381 ^ CharacterManager.shared.mappingSeed
         for char in path.utf8 {
-            hash = ((hash << 5) &+ hash) &+ UInt64(char)  // hash * 33 + char
+            hash = ((hash << 5) &+ hash) &+ UInt64(char)
         }
-        // Map hash to 0-360 degree range
         return Double(hash % 360)
     }
 
     private func updateSpriteInfo(for session: SessionState) {
-        spriteWindows[session.id]?.sessionInfo = SpriteWindowController.SessionInfo(
+        spriteSessionInfo[session.id] = SessionInfo(
             name: session.displayName,
             status: session.status.displayName,
             directory: session.workingDirectory,
@@ -327,14 +382,29 @@ final class SpriteCoordinator: ObservableObject {
     }
 
     private func removeSprite(forSessionId id: String) {
-        spriteWindows[id]?.close()
-        spriteWindows.removeValue(forKey: id)
+        // Remove from scene
+        if let displayID = spriteScreenAssignment[id],
+           let controller = sceneControllers[displayID] {
+            _ = controller.scene.removeSprite(sessionId: id)
+            controller.updatePauseState()
+        }
+
+        spriteScreenAssignment.removeValue(forKey: id)
         spritePhysics.removeValue(forKey: id)
         spriteAnimators.removeValue(forKey: id)
         spriteCharacters.removeValue(forKey: id)
         spriteHueRotations.removeValue(forKey: id)
+        spriteShaders.removeValue(forKey: id)
         spriteHovered.removeValue(forKey: id)
         spriteDragging.removeValue(forKey: id)
+        spriteSessionInfo.removeValue(forKey: id)
+        spriteHasMessageWindow.removeValue(forKey: id)
+
+        // Clean up tooltip if it's for this sprite
+        if tooltipSessionId == id {
+            hideTooltip()
+        }
+
         messageWindows[id]?.close()
         messageWindows.removeValue(forKey: id)
         dismissedMessages.removeValue(forKey: id)
@@ -342,29 +412,63 @@ final class SpriteCoordinator: ObservableObject {
         autoDismissTimers.removeValue(forKey: id)
 
         logger.debug("Removed sprite for session: \(id, privacy: .public)")
-
-        // Stop animation if no more sprites
         updateAnimationState()
     }
 
+    /// Reassign a sprite from its current screen to a new screen
+    private func reassignSprite(sessionId: String, to newScreen: NSScreen) {
+        let newDisplayID = newScreen.displayID
+
+        // Remove from old scene
+        if let oldDisplayID = spriteScreenAssignment[sessionId],
+           let oldController = sceneControllers[oldDisplayID] {
+            _ = oldController.scene.removeSprite(sessionId: sessionId)
+            oldController.updatePauseState()
+        }
+
+        // Add to new scene
+        let controller = ensureSceneController(for: newScreen)
+        spriteScreenAssignment[sessionId] = newDisplayID
+
+        if let animator = spriteAnimators[sessionId],
+           let image = animator.currentImage,
+           let physics = spritePhysics[sessionId] {
+            let texture = SpriteTextureCache.shared.texture(for: image)
+            let localPos = globalToLocal(physics.position, screen: newScreen)
+            controller.scene.addSprite(sessionId: sessionId, texture: texture, size: CGSize(width: 64, height: 64))
+            controller.scene.updateSprite(
+                sessionId: sessionId,
+                texture: texture,
+                position: localPos,
+                facingRight: animator.facingRight,
+                surfaceRotation: physics.surfaceRotation,
+                shader: spriteShaders[sessionId]
+            )
+        }
+
+        controller.updatePauseState()
+    }
+
     private func showAllSprites() {
+        for (_, controller) in sceneControllers {
+            controller.show()
+        }
         for session in sessions {
-            if spriteWindows[session.id] == nil {
+            if spritePhysics[session.id] == nil {
                 createSprite(for: session)
-            } else {
-                spriteWindows[session.id]?.show()
             }
             updateMessageWindow(for: session)
         }
     }
 
     private func hideAllSprites() {
-        for (_, window) in spriteWindows {
-            window.hide()
+        for (_, controller) in sceneControllers {
+            controller.hide()
         }
         for (_, window) in messageWindows {
             window.hide()
         }
+        hideTooltip()
     }
 
     private func handleSpriteClick(sessionId: String) async {
@@ -373,11 +477,132 @@ final class SpriteCoordinator: ObservableObject {
         await terminalFocuser.focusSession(session)
     }
 
+    // MARK: - Private - Hover / Tooltip
+
+    /// Track which sprite ID is currently hovered (driven by animation frame polling)
+    private var lastHoveredId: String?
+
+    /// Called each animation frame with the sprite ID under the mouse (or nil)
+    private func updateHoverState(hoveredId: String?) {
+        // No change
+        guard hoveredId != lastHoveredId else { return }
+
+        // Exit old hover
+        if let oldId = lastHoveredId {
+            spriteHovered[oldId] = false
+            if tooltipSessionId == oldId {
+                hideTooltip()
+            }
+        }
+
+        // Enter new hover
+        if let newId = hoveredId {
+            spriteHovered[newId] = true
+            showTooltip(for: newId)
+        }
+
+        lastHoveredId = hoveredId
+    }
+
+    private func handleHoverEnter(sessionId: String) {
+        spriteHovered[sessionId] = true
+        showTooltip(for: sessionId)
+    }
+
+    private func handleHoverExit(sessionId: String) {
+        spriteHovered[sessionId] = false
+        if tooltipSessionId == sessionId {
+            hideTooltip()
+        }
+    }
+
+    private func showTooltip(for sessionId: String) {
+        // Don't show tooltip when message window is visible
+        guard spriteHasMessageWindow[sessionId] != true else { return }
+
+        if tooltipWindow == nil {
+            createTooltipWindow()
+        }
+        tooltipSessionId = sessionId
+        updateTooltipContent(sessionId: sessionId)
+        positionTooltip(for: sessionId)
+        tooltipWindow?.orderFront(nil)
+    }
+
+    private func hideTooltip() {
+        tooltipWindow?.orderOut(nil)
+        tooltipSessionId = nil
+    }
+
+    private func createTooltipWindow() {
+        let tooltip = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 180, height: 80),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+
+        tooltip.isOpaque = false
+        tooltip.backgroundColor = .clear
+        tooltip.hasShadow = false
+        tooltip.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.maximumWindow)))
+        tooltip.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
+        tooltip.ignoresMouseEvents = true
+
+        let info = SessionInfo()
+        let tooltipView = TooltipView(info: info)
+        let hostingView = NSHostingView(rootView: tooltipView)
+        tooltip.contentView = hostingView
+
+        tooltipWindow = tooltip
+    }
+
+    private func updateTooltipContent(sessionId: String) {
+        guard let tooltip = tooltipWindow,
+              let hostingView = tooltip.contentView as? NSHostingView<TooltipView>,
+              let info = spriteSessionInfo[sessionId] else { return }
+        hostingView.rootView = TooltipView(info: info)
+    }
+
+    private func positionTooltip(for sessionId: String) {
+        guard let tooltip = tooltipWindow,
+              let hostingView = tooltip.contentView as? NSHostingView<TooltipView>,
+              let physics = spritePhysics[sessionId] else { return }
+
+        let fittingSize = hostingView.fittingSize
+        tooltip.setContentSize(fittingSize)
+
+        // Position centered above the sprite (global Cocoa coordinates)
+        let spritePos = physics.position
+        let spriteSize: CGFloat = 64
+        let gap: CGFloat = 8
+        var tooltipOrigin = CGPoint(
+            x: spritePos.x - fittingSize.width / 2,
+            y: spritePos.y + spriteSize + gap
+        )
+
+        // Keep on screen
+        let screen = screenContaining(spritePos) ?? NSScreen.main
+        if let screen {
+            let screenFrame = screen.visibleFrame
+
+            if tooltipOrigin.y + fittingSize.height > screenFrame.maxY - 5 {
+                tooltipOrigin.y = spritePos.y - fittingSize.height - gap
+            }
+
+            tooltipOrigin.x = max(screenFrame.minX + 5, min(screenFrame.maxX - fittingSize.width - 5, tooltipOrigin.x))
+            tooltipOrigin.y = max(screenFrame.minY + 5, min(screenFrame.maxY - fittingSize.height - 5, tooltipOrigin.y))
+        }
+
+        tooltip.setFrameOrigin(tooltipOrigin)
+    }
+
     // MARK: - Private - Drag Handling
 
     private func handleDragStart(sessionId: String) {
         spriteDragging[sessionId] = true
         spritePhysics[sessionId]?.startDrag()
+        hideTooltip()
         logger.debug("Drag started for session: \(sessionId, privacy: .public)")
     }
 
@@ -387,7 +612,6 @@ final class SpriteCoordinator: ObservableObject {
         let now = CACurrentMediaTime()
         let deltaTime = lastFrameTime > 0 ? now - lastFrameTime : 1.0 / 60.0
 
-        // Center the sprite on the cursor
         let spriteCenter = CGPoint(
             x: screenPoint.x,
             y: screenPoint.y
@@ -407,13 +631,10 @@ final class SpriteCoordinator: ObservableObject {
     private func updateMessageWindow(for session: SessionState) {
         let needsMessage = SpriteColors.needsAttention(for: session.status)
 
-        // Check if user dismissed this message for this status
         if let dismissedStatus = dismissedMessages[session.id] {
             if dismissedStatus != session.status {
-                // Status changed, clear the dismissed state
                 dismissedMessages.removeValue(forKey: session.id)
             } else {
-                // Still dismissed for this status, don't show
                 return
             }
         }
@@ -477,7 +698,6 @@ final class SpriteCoordinator: ObservableObject {
         }
     }
 
-    /// Get bounding boxes for all active sprites (for debug overlay)
     private func getSpriteBounds() -> [SpriteBounds] {
         spritePhysics.map { id, physics in
             let session = sessions.first { $0.id == id }
@@ -490,88 +710,76 @@ final class SpriteCoordinator: ObservableObject {
         }
     }
 
+    // MARK: - Private - Coordinate Conversion
+
+    /// Convert global Cocoa coordinates to scene-local coordinates
+    private func globalToLocal(_ point: CGPoint, screen: NSScreen) -> CGPoint {
+        CGPoint(
+            x: point.x - screen.frame.origin.x,
+            y: point.y - screen.frame.origin.y
+        )
+    }
+
+    /// Find the screen containing a point and return the display ID
+    private func displayIDContaining(_ point: CGPoint) -> CGDirectDisplayID? {
+        let screen = NSScreen.screens.first { $0.frame.contains(point) } ?? NSScreen.main
+        return screen?.displayID
+    }
+
     // MARK: - Private - Animation
 
-    private func setupDisplayLink() {
-        var displayLink: CVDisplayLink?
-        CVDisplayLinkCreateWithActiveCGDisplays(&displayLink)
-        self.displayLink = displayLink
-
-        guard let displayLink = displayLink else { return }
-
-        let callback: CVDisplayLinkOutputCallback = { _, _, _, _, _, userInfo -> CVReturn in
-            let coordinator = Unmanaged<SpriteCoordinator>.fromOpaque(userInfo!).takeUnretainedValue()
-
-            // Skip frame if previous frame still processing (reduces CPU when main thread is busy)
-            guard !coordinator.isProcessingFrame.value else { return kCVReturnSuccess }
-
-            DispatchQueue.main.async {
-                coordinator.animationFrame()
-            }
-
-            return kCVReturnSuccess
-        }
-
-        let userInfo = Unmanaged.passUnretained(self).toOpaque()
-        CVDisplayLinkSetOutputCallback(displayLink, callback, userInfo)
-    }
-
-    private func startAnimation() {
-        guard let displayLink = displayLink else { return }
-        CVDisplayLinkStart(displayLink)
-        lastFrameTime = CACurrentMediaTime()
-        logger.debug("Animation started")
-    }
-
-    private func stopAnimation() {
-        guard let displayLink = displayLink else { return }
-        CVDisplayLinkStop(displayLink)
-        logger.debug("Animation stopped")
-    }
-
-    // swiftlint:disable:next cyclomatic_complexity
-    private func animationFrame() {
+    /// Called by SpriteKit's update loop from each scene.
+    /// Multiple scenes may call this per frame; we dedup using a frame counter.
+    // swiftlint:disable:next cyclomatic_complexity function_body_length
+    private func animationFrame(currentTime: CFTimeInterval) {
         guard isEnabled else { return }
 
-        isProcessingFrame.value = true
-        defer { isProcessingFrame.value = false }
+        // Dedup: SpriteKit's currentTime is the same for all scenes in a single frame
+        // Use bit pattern as a cheap frame ID
+        let frameId = currentTime.bitPattern
+        guard frameId != lastUpdateFrameId else { return }
+        lastUpdateFrameId = frameId
 
-        // Log time from session update to render
         if let pendingTime = pendingRenderTime {
             let renderDelay = Date().timeIntervalSince(pendingTime) * 1000
             logger.info("[TIMING] \(timestamp(), privacy: .public) Animation frame rendering (+\(String(format: "%.1f", renderDelay), privacy: .public)ms from session update)")
             pendingRenderTime = nil
         }
 
-        let now = CACurrentMediaTime()
-        let deltaTime = lastFrameTime > 0 ? now - lastFrameTime : 1.0 / 60.0
-        lastFrameTime = now
+        let rawDelta = lastFrameTime > 0 ? currentTime - lastFrameTime : 1.0 / 60.0
+        let deltaTime = min(rawDelta, 0.5)  // Cap at 500ms to prevent huge jumps after pauses/throttle
+        lastFrameTime = currentTime
 
-        // Get current window ledges and walls
+        // Update mouse passthrough and detect hover from mouse position
+        var hoveredIdThisFrame: String?
+        for (_, controller) in sceneControllers {
+            if let hitId = controller.updateMousePassthrough() {
+                hoveredIdThisFrame = hitId
+            }
+        }
+
+        // Drive hover state from mouse position (works even when panel was ignoring events)
+        updateHoverState(hoveredId: hoveredIdThisFrame)
+
         let ledges = windowObserver.getLedges()
         let walls = windowObserver.getWalls()
 
-        // Collect all sprite positions for avoidance behavior
         let allSpritePositions: [String: CGPoint] = spritePhysics.mapValues { $0.position }
 
-        // Update all physics with awareness of other sprites
-        for (id, _) in spriteWindows {
+        // Update all physics
+        for id in spritePhysics.keys {
             guard var physics = spritePhysics[id] else { continue }
             let isDragging = spriteDragging[id] ?? false
 
             if !isDragging {
-                // Get the screen containing this sprite
                 guard let spriteScreen = screenContaining(physics.position) else { continue }
                 let screenBounds = spriteScreen.visibleFrame
 
-                // Get positions of other sprites (exclude self)
                 let otherPositions = allSpritePositions.filter { $0.key != id }.map { $0.value }
 
-                // Check if hovered or has message window
                 let isHovered = spriteHovered[id] ?? false
                 let hasMessageWindow = messageWindows[id] != nil
 
-                // Don't wander when working, waiting for user, hovered, or showing message
                 let session = sessions.first { $0.id == id }
                 let shouldWander: Bool
                 if isHovered || hasMessageWindow {
@@ -591,8 +799,8 @@ final class SpriteCoordinator: ObservableObject {
             }
         }
 
-        // Third pass: update animators and windows
-        for (id, window) in spriteWindows {
+        // Update animators and scene nodes
+        for id in spritePhysics.keys {
             guard let physics = spritePhysics[id],
                   var animator = spriteAnimators[id] else { continue }
 
@@ -600,11 +808,9 @@ final class SpriteCoordinator: ObservableObject {
             let isDragging = spriteDragging[id] ?? false
             let hasMessageWindow = messageWindows[id] != nil
 
-            // Get session status (session info is updated in updateSessions, not here)
             let session = sessions.first { $0.id == id }
             let status = session?.status ?? .idle
 
-            // Update animator - pass isMoving as false when hovered to play idle animation
             let effectivelyMoving = (isHovered || hasMessageWindow) && !isDragging ? false : physics.isMoving
             _ = animator.update(
                 deltaTime: deltaTime,
@@ -618,40 +824,122 @@ final class SpriteCoordinator: ObservableObject {
             )
             spriteAnimators[id] = animator
 
-            // Get hue rotation and surface rotation
-            let hueRotation = spriteHueRotations[id] ?? 0
-            let surfaceRotation = physics.surfaceRotation
-
-            // Flip facing direction for surfaces where rotation inverts the walking direction.
-            // Left walls rotate by π/2 (90° CW), which maps local "right" to screen "down",
-            // so the facing must be inverted for the walk animation to match movement direction.
-            // Ceiling rotates by π (180°), which also inverts the horizontal direction.
+            // Determine facing direction with surface correction
             var effectiveFacingRight = animator.facingRight
             switch physics.currentSurface {
             case .leftWall, .windowWall(_, .left), .ceiling:
-                effectiveFacingRight = !effectiveFacingRight
+                effectiveFacingRight.toggle()
             default:
                 break
             }
 
-            // Update window
-            window.update(
-                image: animator.currentImage,
-                facingRight: effectiveFacingRight,
-                screenPosition: physics.position,
-                hueRotation: hueRotation,
-                surfaceRotation: surfaceRotation
-            )
+            // Check screen assignment and handle transitions
+            let currentDisplayID = spriteScreenAssignment[id]
+            let actualDisplayID = displayIDContaining(physics.position)
+
+            if let actual = actualDisplayID, actual != currentDisplayID {
+                // Sprite moved to a different screen
+                if let newScreen = NSScreen.screens.first(where: { $0.displayID == actual }) {
+                    reassignSprite(sessionId: id, to: newScreen)
+                }
+            }
+
+            // Update the sprite node in the assigned scene
+            if let displayID = spriteScreenAssignment[id],
+               let controller = sceneControllers[displayID],
+               let screen = NSScreen.screens.first(where: { $0.displayID == displayID }),
+               let image = animator.currentImage {
+                let texture = SpriteTextureCache.shared.texture(for: image)
+
+                // Apply render offset for screen walls so feet appear at the screen edge.
+                // Physics position stays at edgeMargin for wall detection, but visually
+                // the sprite should be flush against the edge.
+                var renderPos = physics.position
+                switch physics.currentSurface {
+                case .leftWall:
+                    renderPos.x = screen.visibleFrame.minX
+                case .rightWall:
+                    renderPos.x = screen.visibleFrame.maxX
+                default:
+                    break
+                }
+
+                let localPos = globalToLocal(renderPos, screen: screen)
+
+                controller.scene.updateSprite(
+                    sessionId: id,
+                    texture: texture,
+                    position: localPos,
+                    facingRight: effectiveFacingRight,
+                    surfaceRotation: physics.surfaceRotation,
+                    shader: spriteShaders[id]
+                )
+            }
 
             // Update message window
-            if let session = session {
+            if let session {
                 updateMessageWindow(for: session)
                 let hasMessage = messageWindows[id] != nil
-                window.hasMessageWindow = hasMessage
+                spriteHasMessageWindow[id] = hasMessage
                 if let messageWindow = messageWindows[id] {
                     messageWindow.updatePosition(spritePosition: physics.position)
                 }
             }
+
+            // Update tooltip position if showing for this sprite
+            if tooltipSessionId == id, spriteHovered[id] == true {
+                positionTooltip(for: id)
+            }
         }
+
+        // Throttle frame rate: full speed only when sprites are moving/falling/dragging
+        let needsFullRate = spritePhysics.contains { id, physics in
+            let isDragging = spriteDragging[id] ?? false
+            return physics.isMoving || physics.isFalling || isDragging
+        }
+        for (_, controller) in sceneControllers {
+            controller.setNeedsFullFrameRate(needsFullRate)
+        }
+    }
+}
+
+// MARK: - Tooltip View
+
+/// Tooltip view using terminal frame style
+private struct TooltipView: View {
+    let info: SpriteCoordinator.SessionInfo
+
+    var body: some View {
+        TerminalFrame {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(info.summary ?? info.name)
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundColor(SpriteColors.terminalGreen)
+                    .lineLimit(2)
+
+                HStack(spacing: 6) {
+                    Text(info.status.uppercased())
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundColor(SpriteColors.terminalDimGreen)
+
+                    if let branch = info.gitBranch, !branch.isEmpty {
+                        Text("\u{2022}")
+                            .font(.system(size: 9))
+                            .foregroundColor(SpriteColors.terminalDimGreen.opacity(0.5))
+                        Text(branch)
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundColor(SpriteColors.terminalDimGreen)
+                    }
+                }
+
+                Text(info.directory)
+                    .font(.system(size: 8, design: .monospaced))
+                    .foregroundColor(SpriteColors.terminalDimGreen.opacity(0.7))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .padding(8)
+        }
+        .frame(minWidth: 150, maxWidth: 220)
     }
 }

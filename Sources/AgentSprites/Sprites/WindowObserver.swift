@@ -1,5 +1,7 @@
 import AppKit
+import ApplicationServices
 import CoreGraphics
+import os
 import QuartzCore
 
 /// Observes window positions on screen to provide ledges for sprites to walk on
@@ -42,50 +44,149 @@ final class WindowObserver {
         let maxX: CGFloat
         let minY: CGFloat  // Bottom in Cocoa coords
         let maxY: CGFloat  // Top in Cocoa coords
+    }
 
-        func coversTopEdge(of other: Self, tolerance: CGFloat = 5) -> Bool {
-            // Check if this window covers the top edge of another window
-            // The other window's top edge is at other.maxY
-            // This window covers it if this window's vertical range includes that Y
-            // and horizontal ranges overlap
-            let verticalOverlap = minY < other.maxY && maxY > other.maxY - tolerance
-            let horizontalOverlap = minX < other.maxX && maxX > other.minX
-            return verticalOverlap && horizontalOverlap
+    /// Sorted, non-overlapping set of horizontal intervals
+    private struct IntervalSet {
+        private(set) var intervals: [(min: CGFloat, max: CGFloat)] = []
+
+        /// Merge [lo, hi] into the existing sorted intervals. O(k).
+        mutating func insert(_ lo: CGFloat, _ hi: CGFloat) {
+            guard lo < hi else { return }
+
+            var merged = (min: lo, max: hi)
+            var result: [(min: CGFloat, max: CGFloat)] = []
+            var inserted = false
+
+            for iv in intervals {
+                if iv.max < merged.min {
+                    // iv entirely before merged
+                    result.append(iv)
+                } else if iv.min > merged.max {
+                    // iv entirely after merged — flush merged first
+                    if !inserted {
+                        result.append(merged)
+                        inserted = true
+                    }
+                    result.append(iv)
+                } else {
+                    // Overlapping — extend merged
+                    merged.min = Swift.min(merged.min, iv.min)
+                    merged.max = Swift.max(merged.max, iv.max)
+                }
+            }
+
+            if !inserted {
+                result.append(merged)
+            }
+
+            intervals = result
         }
 
-        /// Returns the horizontal range of the top edge that is NOT covered by this window
-        func uncoveredSegments(topEdgeMinX: CGFloat, topEdgeMaxX: CGFloat, topEdgeY: CGFloat) -> [(CGFloat, CGFloat)] {
-            // If this window doesn't cover the Y level, the whole edge is uncovered
-            if maxY <= topEdgeY || minY >= topEdgeY + 5 {
-                return [(topEdgeMinX, topEdgeMaxX)]
+        /// Return parts of [lo, hi] NOT covered by any interval. O(k).
+        func uncovered(in lo: CGFloat, to hi: CGFloat) -> [(CGFloat, CGFloat)] {
+            guard lo < hi else { return [] }
+            var result: [(CGFloat, CGFloat)] = []
+            var cursor = lo
+
+            for iv in intervals {
+                if iv.min >= hi { break }
+                if iv.max <= cursor { continue }
+
+                let gapStart = cursor
+                let gapEnd = Swift.min(iv.min, hi)
+                if gapEnd > gapStart {
+                    result.append((gapStart, gapEnd))
+                }
+                cursor = Swift.max(cursor, iv.max)
+                if cursor >= hi { break }
             }
 
-            // If no horizontal overlap, whole edge is uncovered
-            if maxX <= topEdgeMinX || minX >= topEdgeMaxX {
-                return [(topEdgeMinX, topEdgeMaxX)]
+            if cursor < hi {
+                result.append((cursor, hi))
             }
 
-            // Calculate uncovered segments
-            var segments: [(CGFloat, CGFloat)] = []
+            return result
+        }
 
-            // Left uncovered portion
-            if minX > topEdgeMinX {
-                segments.append((topEdgeMinX, minX))
+        /// Point query via binary search. O(log k).
+        func covers(_ x: CGFloat) -> Bool {
+            var lo = 0
+            var hi = intervals.count - 1
+
+            while lo <= hi {
+                let mid = (lo + hi) / 2
+                let iv = intervals[mid]
+                if x < iv.min {
+                    hi = mid - 1
+                } else if x > iv.max {
+                    lo = mid + 1
+                } else {
+                    return true
+                }
             }
 
-            // Right uncovered portion
-            if maxX < topEdgeMaxX {
-                segments.append((maxX, topEdgeMaxX))
-            }
-
-            return segments
+            return false
         }
     }
+
+    /// Y-range stabbing index: stores rects sorted by minY for efficient queries
+    private struct RectIndex {
+        private var rects: [WindowRect] = []
+
+        /// Insert a rect, maintaining sort by minY. O(log n) search + O(n) shift.
+        mutating func insert(_ rect: WindowRect) {
+            // Binary search for insertion point
+            var lo = 0
+            var hi = rects.count
+
+            while lo < hi {
+                let mid = (lo + hi) / 2
+                if rects[mid].minY < rect.minY {
+                    lo = mid + 1
+                } else {
+                    hi = mid
+                }
+            }
+
+            rects.insert(rect, at: lo)
+        }
+
+        /// Return all rects where minY <= y <= maxY. O(log n + scan).
+        func query(y: CGFloat) -> [WindowRect] {
+            guard !rects.isEmpty else { return [] }
+
+            // Binary search for first rect with minY > y — all candidates are before this
+            var lo = 0
+            var hi = rects.count
+
+            while lo < hi {
+                let mid = (lo + hi) / 2
+                if rects[mid].minY <= y {
+                    lo = mid + 1
+                } else {
+                    hi = mid
+                }
+            }
+
+            // lo = first index where minY > y, so candidates are 0..<lo
+            var result: [WindowRect] = []
+            for i in 0..<lo where rects[i].maxY >= y {
+                result.append(rects[i])
+            }
+
+            return result
+        }
+    }
+
+    private let logger = Logger(subsystem: "com.agentsprites.app", category: "WindowObserver")
+    private let accessibilityWatcher = AccessibilityWindowWatcher()
+    private let axPollingInterval: CFTimeInterval = 3.0
 
     private var cachedLedges: [Ledge] = []
     private var cachedWalls: [Wall] = []
     private var lastUpdateTime: CFTimeInterval = 0
-    private let updateInterval: CFTimeInterval = 0.5  // Update every 500ms
+    private var updateInterval: CFTimeInterval = 0.5  // Update every 500ms (reduced when AX active)
 
     /// Get all ledges (window tops) sorted by Y position (highest first)
     func getLedges() -> [Ledge] {
@@ -105,6 +206,32 @@ final class WindowObserver {
             lastUpdateTime = now
         }
         return cachedWalls
+    }
+
+    /// Notification posted when window layout changes are detected via AXObserver
+    static let windowsDidChangeNotification = Notification.Name("WindowObserverWindowsDidChange")
+
+    /// Invalidate the cache so the next getLedges/getWalls call recomputes immediately
+    func invalidateCache() {
+        lastUpdateTime = 0
+        NotificationCenter.default.post(name: Self.windowsDidChangeNotification, object: nil)
+    }
+
+    /// Start AXObserver-based watching if accessibility is granted.
+    /// When active, polling interval increases to 3s (AX events trigger immediate invalidation).
+    /// Without accessibility, keeps the default 500ms polling — zero regression.
+    func startObserving() {
+        accessibilityWatcher.onWindowsChanged = { [weak self] in
+            self?.invalidateCache()
+        }
+
+        if AXIsProcessTrusted() {
+            accessibilityWatcher.start()
+            updateInterval = axPollingInterval
+            logger.info("AXObserver active — polling interval set to \(self.axPollingInterval, privacy: .public)s")
+        } else {
+            logger.info("Accessibility not granted — using \(self.updateInterval, privacy: .public)s polling")
+        }
     }
 
     // swiftlint:disable:next cyclomatic_complexity function_body_length
@@ -192,117 +319,72 @@ final class WindowObserver {
             windowRects.append((rect, windowId))
         }
 
-        // Now process windows and create ledges, accounting for occlusion
-        // Windows are in front-to-back order, so earlier windows occlude later ones
+        // Single front-to-back pass: compute ledges and walls using interval index
+        var rectIndex = RectIndex()
         var ledges: [Ledge] = []
+        var walls: [Wall] = []
 
-        for (index, current) in windowRects.enumerated() {
-            // Start with the full top edge as potentially visible
-            var visibleSegments: [(minX: CGFloat, maxX: CGFloat)] = [(current.rect.minX, current.rect.maxX)]
+        for current in windowRects {
+            let rect = current.rect
+            let topY = rect.maxY
 
-            // Check against all windows in front (earlier in the list)
-            for frontIndex in 0..<index {
-                let frontRect = windowRects[frontIndex].rect
+            // Query all front rects that span this window's top edge Y
+            let frontRects = rectIndex.query(y: topY)
 
-                // Check if front window occludes any of our visible segments
-                var newSegments: [(CGFloat, CGFloat)] = []
-
-                for segment in visibleSegments {
-                    // Get the parts of this segment not covered by the front window
-                    let uncovered = subtractHorizontalRange(
-                        segment: segment,
-                        blocker: (frontRect.minX, frontRect.maxX),
-                        segmentY: current.rect.maxY,
-                        blockerMinY: frontRect.minY,
-                        blockerMaxY: frontRect.maxY
-                    )
-                    newSegments.append(contentsOf: uncovered)
-                }
-
-                visibleSegments = newSegments
+            // Build X-coverage from front rects
+            var coverage = IntervalSet()
+            for frontRect in frontRects {
+                coverage.insert(frontRect.minX, frontRect.maxX)
             }
 
-            // Create ledges for visible segments (filter out tiny segments)
-            for segment in visibleSegments {
-                let width = segment.maxX - segment.minX
-                if width >= 60 {  // Minimum ledge width
-                    ledges.append(Ledge(
-                        minX: segment.minX,
-                        maxX: segment.maxX,
-                        y: current.rect.maxY,
-                        windowId: current.windowId
-                    ))
-                }
+            // Compute visible ledge segments
+            let visible = coverage.uncovered(in: rect.minX, to: rect.maxX)
+            for segment in visible where (segment.1 - segment.0) >= 60 {
+                ledges.append(Ledge(
+                    minX: segment.0,
+                    maxX: segment.1,
+                    y: topY,
+                    windowId: current.windowId
+                ))
             }
+
+            // Compute walls — check if left/right edges are covered
+            let windowBottom = rect.minY
+            let surfaceBelowLeft = findSurfaceBelow(atX: rect.minX, belowY: topY, ledges: ledges, groundY: groundY)
+            let surfaceBelowRight = findSurfaceBelow(atX: rect.maxX, belowY: topY, ledges: ledges, groundY: groundY)
+            let leftWallMinY = max(windowBottom, surfaceBelowLeft)
+            let rightWallMinY = max(windowBottom, surfaceBelowRight)
+
+            let minWallHeight: CGFloat = 50
+            let leftCovered = coverage.covers(rect.minX)
+            let rightCovered = coverage.covers(rect.maxX)
+
+            if !leftCovered && (topY - leftWallMinY) >= minWallHeight {
+                walls.append(Wall(
+                    x: rect.minX,
+                    minY: leftWallMinY,
+                    maxY: topY,
+                    side: .left,
+                    windowId: current.windowId
+                ))
+            }
+
+            if !rightCovered && (topY - rightWallMinY) >= minWallHeight {
+                walls.append(Wall(
+                    x: rect.maxX,
+                    minY: rightWallMinY,
+                    maxY: topY,
+                    side: .right,
+                    windowId: current.windowId
+                ))
+            }
+
+            // Insert this window into index for future queries
+            rectIndex.insert(rect)
         }
 
         // Sort by Y position (highest first) so we check top ledges first
         cachedLedges = ledges.sorted { $0.y > $1.y }
-
-        // Generate walls from window edges
-        var walls: [Wall] = []
-
-        for (index, current) in windowRects.enumerated() {
-            let rect = current.rect
-            let windowId = current.windowId
-
-            // Wall minY should be the window's bottom edge (not extend below the window)
-            // But if there's a surface above the window bottom, use that instead
-            let windowBottom = rect.minY
-            let surfaceBelowLeft = findSurfaceBelow(atX: rect.minX, belowY: rect.maxY, ledges: cachedLedges, groundY: groundY)
-            let surfaceBelowRight = findSurfaceBelow(atX: rect.maxX, belowY: rect.maxY, ledges: cachedLedges, groundY: groundY)
-            // Take the higher of window bottom or surface below
-            let leftWallMinY = max(windowBottom, surfaceBelowLeft)
-            let rightWallMinY = max(windowBottom, surfaceBelowRight)
-
-            // Check for occlusion by windows in front
-            // A wall is occluded if a front window covers its X position
-            var leftWallVisible = true
-            var rightWallVisible = true
-
-            for frontIndex in 0..<index {
-                let frontRect = windowRects[frontIndex].rect
-
-                // Left wall is occluded if front window's horizontal range covers minX
-                // and front window's vertical range overlaps with the wall's range
-                if frontRect.minX <= rect.minX && frontRect.maxX > rect.minX {
-                    if frontRect.minY < rect.maxY && frontRect.maxY > leftWallMinY {
-                        leftWallVisible = false
-                    }
-                }
-
-                // Right wall is occluded if front window's horizontal range covers maxX
-                if frontRect.minX < rect.maxX && frontRect.maxX >= rect.maxX {
-                    if frontRect.minY < rect.maxY && frontRect.maxY > rightWallMinY {
-                        rightWallVisible = false
-                    }
-                }
-            }
-
-            // Minimum wall height to be useful
-            let minWallHeight: CGFloat = 50
-
-            if leftWallVisible && (rect.maxY - leftWallMinY) >= minWallHeight {
-                walls.append(Wall(
-                    x: rect.minX,
-                    minY: leftWallMinY,
-                    maxY: rect.maxY,
-                    side: .left,
-                    windowId: windowId
-                ))
-            }
-
-            if rightWallVisible && (rect.maxY - rightWallMinY) >= minWallHeight {
-                walls.append(Wall(
-                    x: rect.maxX,
-                    minY: rightWallMinY,
-                    maxY: rect.maxY,
-                    side: .right,
-                    windowId: windowId
-                ))
-            }
-        }
-
         cachedWalls = walls
     }
 
@@ -324,41 +406,6 @@ final class WindowObserver {
         }
 
         return highestY
-    }
-
-    /// Subtract a blocking horizontal range from a segment, considering Y overlap
-    private func subtractHorizontalRange(
-        segment: (minX: CGFloat, maxX: CGFloat),
-        blocker: (minX: CGFloat, maxX: CGFloat),
-        segmentY: CGFloat,
-        blockerMinY: CGFloat,
-        blockerMaxY: CGFloat
-    ) -> [(minX: CGFloat, maxX: CGFloat)] {
-        // If blocker doesn't cover this Y level, segment is unchanged
-        // The blocker covers segmentY if blockerMinY <= segmentY <= blockerMaxY
-        if blockerMaxY <= segmentY || blockerMinY > segmentY {
-            return [segment]
-        }
-
-        // If no horizontal overlap, segment is unchanged
-        if blocker.maxX <= segment.minX || blocker.minX >= segment.maxX {
-            return [segment]
-        }
-
-        // Calculate remaining segments after subtraction
-        var result: [(CGFloat, CGFloat)] = []
-
-        // Left remainder
-        if blocker.minX > segment.minX {
-            result.append((segment.minX, blocker.minX))
-        }
-
-        // Right remainder
-        if blocker.maxX < segment.maxX {
-            result.append((blocker.maxX, segment.maxX))
-        }
-
-        return result
     }
 
     /// Find the ledge at or below a given position that the sprite can land on
