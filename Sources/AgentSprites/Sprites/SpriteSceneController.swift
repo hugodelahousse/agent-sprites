@@ -95,10 +95,15 @@ final class SpriteSceneController {
         panel.close()
     }
 
-    /// Update pause state based on sprite count
+    /// Update pause and visibility based on sprite count
     func updatePauseState() {
-        let shouldPause = scene.spriteCount == 0
-        setPaused(shouldPause)
+        let hasSprites = scene.spriteCount > 0
+        setPaused(!hasSprites)
+        if hasSprites && !panel.isVisible {
+            panel.orderFront(nil)
+        } else if !hasSprites && panel.isVisible {
+            panel.orderOut(nil)
+        }
     }
 
     /// Explicitly set paused state

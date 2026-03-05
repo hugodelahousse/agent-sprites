@@ -190,9 +190,6 @@ final class SpriteCoordinator: ObservableObject {
         let controller = SpriteSceneController(screen: screen)
         setupSceneCallbacks(controller)
         sceneControllers[displayID] = controller
-        if isEnabled {
-            controller.show()
-        }
         return controller
     }
 
@@ -450,9 +447,6 @@ final class SpriteCoordinator: ObservableObject {
     }
 
     private func showAllSprites() {
-        for (_, controller) in sceneControllers {
-            controller.show()
-        }
         for session in sessions {
             if spritePhysics[session.id] == nil {
                 createSprite(for: session)
