@@ -111,17 +111,12 @@ The app uses **Distributed Notifications** for IPC between CLI and App:
 ### Performance (Critical)
 This app runs continuously in the background - CPU/memory efficiency is paramount.
 
-**Animation & Rendering:**
-- Never recreate SwiftUI views every frame - use `@ObservedObject`/`@Published` to update existing views
-- Stop CVDisplayLink/timers when there's nothing to animate (no active sprites)
-- Only update window positions when they actually change
-- Use reference equality (`===`) for images to avoid unnecessary diffing
-
-**SwiftUI Efficiency:**
-- Avoid creating new view structs in hot paths (animation loops, timers)
-- Use observable models with `@Published` properties for frequently-updated state
-- Minimize view body complexity - extract static parts into separate views
-- Compare values before updating `@Published` properties to prevent unnecessary invalidation
+**Animation & Rendering (SpriteKit):**
+- One fullscreen transparent SKScene per display, not per-sprite windows
+- SpriteKit's update loop drives animation — no CVDisplayLink
+- Pause scenes when they have no sprites; throttle to 4fps when all sprites are idle
+- Use `SpriteTextureCache` for NSImage→SKTexture conversion (keyed by reference identity)
+- Only update node properties (texture, position, xScale, zRotation, shader) when they change
 
 **General:**
 - Profile with Instruments before and after changes to animation/rendering code
@@ -150,6 +145,13 @@ IPC between CLI and App uses `DistributedNotificationCenter`:
 - Use @ObservedObject for passed-in view models
 - MenuBarExtra for menu bar apps (macOS 13+)
 - WindowGroup with id for multiple window types
+
+## Pull Requests & Releases
+- Always work on a feature branch, never commit directly to `main`
+- Open a PR for every change — PR titles become release changelog entries
+- Label PRs: `enhancement`, `bug`, or `performance`
+- Keep PR titles short and descriptive (under 70 chars)
+- Releases are auto-created by CI when a tag `v*` is pushed — the changelog is generated from merged PR titles grouped by label
 
 ## Testing
 - XCTest for unit tests
