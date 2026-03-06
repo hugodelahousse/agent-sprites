@@ -34,8 +34,8 @@ struct MenuBarView: View {
             .padding(.top, 8)
 
             // Update available banner
-            if let update = updateChecker.availableUpdate {
-                UpdateBannerView(update: update, updateChecker: updateChecker)
+            if updateChecker.updateState != .none {
+                UpdateBannerView(updateChecker: updateChecker)
                     .padding(.horizontal, 12)
             }
 
@@ -113,45 +113,128 @@ struct MenuBarView: View {
 // MARK: - Update Banner
 
 struct UpdateBannerView: View {
-    let update: AppRelease
     @ObservedObject var updateChecker: UpdateChecker
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Image(systemName: "arrow.down.circle.fill")
-                    .foregroundColor(.blue)
-                Text("v\(update.version) available")
-                    .font(.subheadline)
-                    .fontWeight(.medium)
-                Spacer()
-                Button {
-                    updateChecker.dismissUpdate()
-                } label: {
-                    Image(systemName: "xmark")
+            switch updateChecker.updateState {
+            case .none:
+                EmptyView()
+
+            case .available(let release):
+                HStack {
+                    Image(systemName: "arrow.down.circle.fill")
+                        .foregroundColor(.blue)
+                    Text("v\(release.version) available")
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                    Spacer()
+                    Button {
+                        updateChecker.dismissUpdate()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                HStack {
+                    Button("Update & Restart") {
+                        updateChecker.downloadAndInstall(release: release)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+
+                    Button("Release Notes") {
+                        NSWorkspace.shared.open(release.releaseURL)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+
+            case .downloading(let progress):
+                HStack {
+                    Image(systemName: "arrow.down.circle")
+                        .foregroundColor(.blue)
+                    Text("Downloading update...")
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                    Spacer()
+                    Text("\(Int(progress * 100))%")
                         .font(.caption)
                         .foregroundColor(.secondary)
+                        .monospacedDigit()
                 }
-                .buttonStyle(.plain)
-            }
+                ProgressView(value: progress)
+                    .progressViewStyle(.linear)
 
-            HStack {
-                Button("Download") {
-                    NSWorkspace.shared.open(update.downloadURL)
+            case .readyToInstall:
+                HStack {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundColor(.green)
+                    Text("Ready to install")
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                    Spacer()
+                }
+                Button("Restart Now") {
+                    updateChecker.installAndRelaunch()
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
 
-                Button("Release Notes") {
-                    NSWorkspace.shared.open(update.releaseURL)
+            case .installing:
+                HStack {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Installing...")
+                        .font(.subheadline)
+                        .fontWeight(.medium)
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
+
+            case .failed(let message):
+                HStack {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundColor(.red)
+                    Text("Update failed")
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                    Spacer()
+                }
+                Text(message)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(2)
+                HStack {
+                    Button("Retry") {
+                        Task {
+                            await updateChecker.checkForUpdates()
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+
+                    Button("Dismiss") {
+                        updateChecker.dismissUpdate()
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
             }
         }
         .padding(10)
-        .background(Color.blue.opacity(0.1))
+        .background(updateBannerColor.opacity(0.1))
         .cornerRadius(8)
+    }
+
+    private var updateBannerColor: Color {
+        switch updateChecker.updateState {
+        case .failed:
+            return .red
+        default:
+            return .blue
+        }
     }
 }
 
