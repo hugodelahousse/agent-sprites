@@ -4,11 +4,14 @@ import os.log
 
 private let logger = Logger(subsystem: "com.agentsprites.app", category: "SessionManager")
 
-private func timestamp() -> String {
-    let now = Date()
+private let timestampFormatter: DateFormatter = {
     let formatter = DateFormatter()
     formatter.dateFormat = "HH:mm:ss.SSS"
-    return formatter.string(from: now)
+    return formatter
+}()
+
+private func timestamp() -> String {
+    timestampFormatter.string(from: Date())
 }
 
 /// Manages session states in memory, processing events from CLI notifications
@@ -22,6 +25,7 @@ actor SessionManager {
 
     /// Process a session event from CLI notification
     func processEvent(_ event: SessionEvent) {
+        os_signpost(.begin, log: AppSignposts.sessionProcessing, name: "ProcessEvent")
         let startTime = Date()
         logger.info("[TIMING] \(timestamp(), privacy: .public) Processing event: session=\(event.sessionId.prefix(8), privacy: .public), event=\(event.eventName, privacy: .public), metadataOnly=\(event.isMetadataUpdate, privacy: .public)")
 
@@ -79,6 +83,7 @@ actor SessionManager {
             scheduleDoneToIdle(sessionId: event.sessionId)
         }
 
+        os_signpost(.end, log: AppSignposts.sessionProcessing, name: "ProcessEvent")
         changeCallback?(store.activeSessions)
     }
 

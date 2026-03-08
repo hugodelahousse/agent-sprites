@@ -40,6 +40,13 @@ let package = Package(
             ]
         ),
 
+        // Stress test tool
+        .executableTarget(
+            name: "agentsprites-stress",
+            dependencies: ["AgentSpritesCore"],
+            path: "Sources/agentsprites-stress"
+        ),
+
         // Tests
         .testTarget(
             name: "AgentSpritesCoreTests",

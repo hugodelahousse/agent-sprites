@@ -4,11 +4,14 @@ import os
 import SwiftUI
 import AgentSpritesCore
 
-private func timestamp() -> String {
-    let now = Date()
+private let timestampFormatter: DateFormatter = {
     let formatter = DateFormatter()
     formatter.dateFormat = "HH:mm:ss.SSS"
-    return formatter.string(from: now)
+    return formatter
+}()
+
+private func timestamp() -> String {
+    timestampFormatter.string(from: Date())
 }
 
 /// Returns the screen containing the given point, or main screen as fallback
@@ -56,6 +59,7 @@ final class SpriteCoordinator: ObservableObject {
     // Message windows (unchanged)
     private var messageWindows: [String: MessageWindowController] = [:]
     private var dismissedMessages: [String: SessionStatus] = [:]
+    private var lastMessageStatus: [String: SessionStatus] = [:]
     private var autoDismissTimers: [String: Timer] = [:]
 
     // Tooltip (shared, repositioned per-sprite)
@@ -67,6 +71,7 @@ final class SpriteCoordinator: ObservableObject {
     private var sessions: [SessionState] = []
     private var pendingRenderTime: Date?
     private var lastUpdateFrameId: UInt64 = 0  // Dedup multiple scenes calling per frame
+    private var lastLedgeCount: Int = -1  // Track ledge changes cheaply
 
     private let terminalFocuser = TerminalFocuser()
     private let windowObserver = WindowObserver.shared
@@ -262,6 +267,12 @@ final class SpriteCoordinator: ObservableObject {
             }
         }
 
+        // Update message windows on session change (not per-frame)
+        for session in newSessions {
+            updateMessageWindow(for: session)
+            spriteHasMessageWindow[session.id] = messageWindows[session.id]?.isVisible ?? false
+        }
+
         updateAnimationState()
 
         pendingRenderTime = Date()
@@ -410,6 +421,7 @@ final class SpriteCoordinator: ObservableObject {
         messageWindows[id]?.close()
         messageWindows.removeValue(forKey: id)
         dismissedMessages.removeValue(forKey: id)
+        lastMessageStatus.removeValue(forKey: id)
         autoDismissTimers[id]?.invalidate()
         autoDismissTimers.removeValue(forKey: id)
 
@@ -629,6 +641,13 @@ final class SpriteCoordinator: ObservableObject {
 
     private func updateMessageWindow(for session: SessionState) {
         let needsMessage = SpriteColors.needsAttention(for: session.status)
+        let lastNeeded = lastMessageStatus[session.id].map { SpriteColors.needsAttention(for: $0) }
+
+        // Skip if attention state hasn't changed (avoid expensive orderFront/orderOut)
+        if lastNeeded == needsMessage, lastMessageStatus[session.id] == session.status {
+            return
+        }
+        lastMessageStatus[session.id] = session.status
 
         if let dismissedStatus = dismissedMessages[session.id] {
             if dismissedStatus != session.status {
@@ -639,15 +658,14 @@ final class SpriteCoordinator: ObservableObject {
         }
 
         if needsMessage {
-            if messageWindows[session.id] == nil {
-                createMessageWindow(for: session)
+            if let existing = messageWindows[session.id] {
+                existing.update(status: session.status, summary: session.summary)
+                existing.show()
             } else {
-                messageWindows[session.id]?.update(status: session.status, summary: session.summary)
+                createMessageWindow(for: session)
             }
-        } else {
-            messageWindows[session.id]?.close()
-            messageWindows.removeValue(forKey: session.id)
-            dismissedMessages.removeValue(forKey: session.id)
+        } else if let window = messageWindows[session.id] {
+            window.hide()
         }
     }
 
@@ -739,6 +757,8 @@ final class SpriteCoordinator: ObservableObject {
         guard frameId != lastUpdateFrameId else { return }
         lastUpdateFrameId = frameId
 
+        os_signpost(.begin, log: AppSignposts.renderLoop, name: "AnimationFrame")
+
         if let pendingTime = pendingRenderTime {
             let renderDelay = Date().timeIntervalSince(pendingTime) * 1000
             logger.info("[TIMING] \(timestamp(), privacy: .public) Animation frame rendering (+\(String(format: "%.1f", renderDelay), privacy: .public)ms from session update)")
@@ -762,6 +782,10 @@ final class SpriteCoordinator: ObservableObject {
 
         let ledges = windowObserver.getLedges()
         let walls = windowObserver.getWalls()
+
+        // Detect ledge layout changes cheaply (count change = windows moved/appeared/disappeared)
+        let ledgesChanged = ledges.count != lastLedgeCount
+        lastLedgeCount = ledges.count
 
         let allSpritePositions: [String: CGPoint] = spritePhysics.mapValues { $0.position }
 
@@ -793,7 +817,7 @@ final class SpriteCoordinator: ObservableObject {
                 }
 
                 physics.groundY = screenBounds.minY
-                physics.update(deltaTime: CGFloat(deltaTime), screenBounds: screenBounds, ledges: ledges, walls: walls, otherSprites: otherPositions, shouldWander: shouldWander)
+                physics.update(deltaTime: CGFloat(deltaTime), screenBounds: screenBounds, ledges: ledges, walls: walls, otherSprites: otherPositions, shouldWander: shouldWander, ledgesChanged: ledgesChanged)
                 spritePhysics[id] = physics
             }
         }
@@ -875,14 +899,9 @@ final class SpriteCoordinator: ObservableObject {
                 )
             }
 
-            // Update message window
-            if let session {
-                updateMessageWindow(for: session)
-                let hasMessage = messageWindows[id] != nil
-                spriteHasMessageWindow[id] = hasMessage
-                if let messageWindow = messageWindows[id] {
-                    messageWindow.updatePosition(spritePosition: physics.position)
-                }
+            // Update message window position (creation/visibility handled in updateSessions)
+            if messageWindows[id]?.isVisible == true {
+                messageWindows[id]?.updatePosition(spritePosition: physics.position)
             }
 
             // Update tooltip position if showing for this sprite
@@ -899,6 +918,8 @@ final class SpriteCoordinator: ObservableObject {
         for (_, controller) in sceneControllers {
             controller.setNeedsFullFrameRate(needsFullRate)
         }
+
+        os_signpost(.end, log: AppSignposts.renderLoop, name: "AnimationFrame")
     }
 }
 

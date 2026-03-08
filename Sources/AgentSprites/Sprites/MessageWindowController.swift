@@ -11,9 +11,11 @@ final class MessageWindowController {
     private var contentView: MessageContentView
     private var sessionName: String
     private var summary: String?
+    private(set) var currentStatus: SessionStatus
 
     var onFocusTerminal: (() -> Void)?
     var onDismiss: (() -> Void)?
+    private(set) var isVisible = false
 
     private static let windowSize = NSSize(width: 200, height: 100)
 
@@ -21,6 +23,7 @@ final class MessageWindowController {
         self.sessionId = sessionId
         self.sessionName = sessionName
         self.summary = summary
+        self.currentStatus = status
 
         let position = Self.calculatePosition(spritePosition: spritePosition)
 
@@ -76,18 +79,29 @@ final class MessageWindowController {
     }
 
     func show() {
-        panel.orderFront(nil)
+        guard !isVisible else { return }
+        isVisible = true
+        if !panel.isVisible {
+            panel.orderFront(nil)
+        }
+        panel.alphaValue = 1
     }
 
     func hide() {
-        panel.orderOut(nil)
+        guard isVisible else { return }
+        isVisible = false
+        panel.alphaValue = 0
     }
 
     func close() {
+        isVisible = false
         panel.close()
     }
 
     func update(status: SessionStatus, summary: String? = nil) {
+        let summaryChanged = summary != nil && summary != self.summary
+        guard status != currentStatus || summaryChanged else { return }
+        currentStatus = status
         if let summary {
             self.summary = summary
         }
