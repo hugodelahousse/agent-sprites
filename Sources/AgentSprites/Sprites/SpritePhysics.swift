@@ -44,7 +44,7 @@ struct SpritePhysics: Sendable {
     // Wander behavior
     private var targetPosition: CGFloat
     private var wanderState: WanderState = .idling
-    private var idleStartTime: Date?
+    private var idleStartTime: CFAbsoluteTime = 0
     private var idleInterval: TimeInterval = Self.randomIdleInterval()
 
     // Physics constants
@@ -64,7 +64,7 @@ struct SpritePhysics: Sendable {
         self.position = CGPoint(x: x, y: groundY)
         self.groundY = groundY
         self.targetPosition = x
-        self.idleStartTime = Date()
+        self.idleStartTime = CFAbsoluteTimeGetCurrent()
     }
 
     var isMoving: Bool {
@@ -178,13 +178,19 @@ struct SpritePhysics: Sendable {
 
     // Detection range for other sprites
     private static let spriteDetectionRange: CGFloat = 20
+    private static let spriteDetectionRangeSquared: CGFloat = 20 * 20
     private static let spriteAvoidanceChance: CGFloat = 0.7  // 70% chance to turn when sprite detected ahead
 
-    mutating func update(deltaTime: CGFloat, screenBounds: CGRect, ledges: [WindowObserver.Ledge], walls: [WindowObserver.Wall] = [], otherSprites: [CGPoint] = [], shouldWander: Bool = true) {
+    /// Frame counter for throttling expensive checks
+    private var frameCount: UInt32 = 0
+
+    mutating func update(deltaTime: CGFloat, screenBounds: CGRect, ledges: [WindowObserver.Ledge], walls: [WindowObserver.Wall] = [], otherSprites: [CGPoint] = [], shouldWander: Bool = true, ledgesChanged: Bool = false) {
         guard !isDragging else { return }
 
-        // Check if another sprite is ahead and maybe change direction
-        if shouldWander {
+        frameCount &+= 1
+
+        // Check sprite avoidance every 10th frame (6fps effective at 60fps)
+        if shouldWander, frameCount % 10 == 0 {
             checkForSpritesAhead(otherSprites: otherSprites, screenBounds: screenBounds, ledges: ledges)
         }
 
@@ -192,7 +198,7 @@ struct SpritePhysics: Sendable {
         case .falling:
             updateFalling(deltaTime: deltaTime, screenBounds: screenBounds, ledges: ledges)
         case .floor, .ledge:
-            updateHorizontalSurface(deltaTime: deltaTime, screenBounds: screenBounds, ledges: ledges, walls: walls, shouldWander: shouldWander)
+            updateHorizontalSurface(deltaTime: deltaTime, screenBounds: screenBounds, ledges: ledges, walls: walls, shouldWander: shouldWander, ledgesChanged: ledgesChanged)
         case .leftWall, .rightWall:
             updateScreenWallClimbing(deltaTime: deltaTime, screenBounds: screenBounds, ledges: ledges, shouldWander: shouldWander)
         case .windowWall:
@@ -217,10 +223,10 @@ struct SpritePhysics: Sendable {
         for otherPos in otherSprites {
             let dx = otherPos.x - position.x
             let dy = otherPos.y - position.y
-            let distance = sqrt(dx * dx + dy * dy)
+            let distanceSquared = dx * dx + dy * dy
 
-            // Skip if too far
-            guard distance < Self.spriteDetectionRange else { continue }
+            // Skip if too far (squared comparison avoids sqrt)
+            guard distanceSquared < Self.spriteDetectionRangeSquared else { continue }
 
             // Check if the other sprite is ahead of us in our movement direction
             var isAhead = false
@@ -359,7 +365,7 @@ struct SpritePhysics: Sendable {
     }
 
     // swiftlint:disable:next cyclomatic_complexity function_body_length
-    private mutating func updateHorizontalSurface(deltaTime: CGFloat, screenBounds: CGRect, ledges: [WindowObserver.Ledge], walls: [WindowObserver.Wall], shouldWander: Bool) {
+    private mutating func updateHorizontalSurface(deltaTime: CGFloat, screenBounds: CGRect, ledges: [WindowObserver.Ledge], walls: [WindowObserver.Wall], shouldWander: Bool, ledgesChanged: Bool = false) {
         // Wander behavior (only when enabled)
         if shouldWander {
             updateWander(deltaTime: deltaTime, screenBounds: screenBounds, ledges: ledges)
@@ -423,8 +429,8 @@ struct SpritePhysics: Sendable {
                 currentLedgeY = nil
                 currentLedgeMinX = nil
                 currentLedgeMaxX = nil
-            } else if let ledgeY = currentLedgeY {
-                // Verify the ledge still exists (window may have moved)
+            } else if ledgesChanged, let ledgeY = currentLedgeY {
+                // Verify the ledge still exists (only when window layout changed)
                 let ledgeStillExists = ledges.contains { ledge in
                     abs(ledge.y - ledgeY) < 10 && ledge.contains(x: position.x)
                 }
@@ -747,14 +753,13 @@ struct SpritePhysics: Sendable {
 
     private mutating func startIdling(stuck: Bool) {
         wanderState = stuck ? .stuckIdling : .idling
-        idleStartTime = Date()
+        idleStartTime = CFAbsoluteTimeGetCurrent()
         idleInterval = Self.randomIdleInterval()
         velocity = .zero
     }
 
     private func hasIdleExpired() -> Bool {
-        guard let start = idleStartTime else { return true }
-        return Date().timeIntervalSince(start) >= idleInterval
+        CFAbsoluteTimeGetCurrent() - idleStartTime >= idleInterval
     }
 
     private mutating func pickNewTarget(screenBounds: CGRect, ledges: [WindowObserver.Ledge]) {

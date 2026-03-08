@@ -71,6 +71,7 @@ final class SpriteCoordinator: ObservableObject {
     private var sessions: [SessionState] = []
     private var pendingRenderTime: Date?
     private var lastUpdateFrameId: UInt64 = 0  // Dedup multiple scenes calling per frame
+    private var lastLedgeCount: Int = -1  // Track ledge changes cheaply
 
     private let terminalFocuser = TerminalFocuser()
     private let windowObserver = WindowObserver.shared
@@ -778,6 +779,10 @@ final class SpriteCoordinator: ObservableObject {
         let ledges = windowObserver.getLedges()
         let walls = windowObserver.getWalls()
 
+        // Detect ledge layout changes cheaply (count change = windows moved/appeared/disappeared)
+        let ledgesChanged = ledges.count != lastLedgeCount
+        lastLedgeCount = ledges.count
+
         let allSpritePositions: [String: CGPoint] = spritePhysics.mapValues { $0.position }
 
         // Update all physics
@@ -808,7 +813,7 @@ final class SpriteCoordinator: ObservableObject {
                 }
 
                 physics.groundY = screenBounds.minY
-                physics.update(deltaTime: CGFloat(deltaTime), screenBounds: screenBounds, ledges: ledges, walls: walls, otherSprites: otherPositions, shouldWander: shouldWander)
+                physics.update(deltaTime: CGFloat(deltaTime), screenBounds: screenBounds, ledges: ledges, walls: walls, otherSprites: otherPositions, shouldWander: shouldWander, ledgesChanged: ledgesChanged)
                 spritePhysics[id] = physics
             }
         }
