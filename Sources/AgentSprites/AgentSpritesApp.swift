@@ -25,7 +25,7 @@ struct AgentSpritesApp: App {
                 updateChecker: updateChecker
             )
         } label: {
-            Label("AgentSprites", systemImage: viewModel.menuBarIcon)
+            Image(nsImage: MenuBarIcon.makeImage())
         }
         .menuBarExtraStyle(.window)
         .onChange(of: viewModel.sessions) { newSessions in
