@@ -104,6 +104,10 @@ final class SpriteCoordinator: ObservableObject {
     }
 
     init() {
+        // Default to enabled on first launch (bool(forKey:) returns false if key doesn't exist)
+        if UserDefaults.standard.object(forKey: Self.enabledKey) == nil {
+            UserDefaults.standard.set(true, forKey: Self.enabledKey)
+        }
         self.isEnabled = UserDefaults.standard.bool(forKey: Self.enabledKey)
 
         _ = CharacterManager.shared
