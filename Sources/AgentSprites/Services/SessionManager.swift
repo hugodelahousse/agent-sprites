@@ -4,11 +4,14 @@ import os.log
 
 private let logger = Logger(subsystem: "com.agentsprites.app", category: "SessionManager")
 
-private func timestamp() -> String {
-    let now = Date()
+private let timestampFormatter: DateFormatter = {
     let formatter = DateFormatter()
     formatter.dateFormat = "HH:mm:ss.SSS"
-    return formatter.string(from: now)
+    return formatter
+}()
+
+private func timestamp() -> String {
+    timestampFormatter.string(from: Date())
 }
 
 /// Manages session states in memory, processing events from CLI notifications

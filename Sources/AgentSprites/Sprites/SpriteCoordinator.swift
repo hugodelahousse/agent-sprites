@@ -4,11 +4,14 @@ import os
 import SwiftUI
 import AgentSpritesCore
 
-private func timestamp() -> String {
-    let now = Date()
+private let timestampFormatter: DateFormatter = {
     let formatter = DateFormatter()
     formatter.dateFormat = "HH:mm:ss.SSS"
-    return formatter.string(from: now)
+    return formatter
+}()
+
+private func timestamp() -> String {
+    timestampFormatter.string(from: Date())
 }
 
 /// Returns the screen containing the given point, or main screen as fallback
@@ -632,13 +635,14 @@ final class SpriteCoordinator: ObservableObject {
     // MARK: - Private - Message Windows
 
     private func updateMessageWindow(for session: SessionState) {
-        // Skip if status hasn't changed since last call
-        if lastMessageStatus[session.id] == session.status {
+        let needsMessage = SpriteColors.needsAttention(for: session.status)
+        let lastNeeded = lastMessageStatus[session.id].map { SpriteColors.needsAttention(for: $0) }
+
+        // Skip if attention state hasn't changed (avoid expensive orderFront/orderOut)
+        if lastNeeded == needsMessage, lastMessageStatus[session.id] == session.status {
             return
         }
         lastMessageStatus[session.id] = session.status
-
-        let needsMessage = SpriteColors.needsAttention(for: session.status)
 
         if let dismissedStatus = dismissedMessages[session.id] {
             if dismissedStatus != session.status {
@@ -656,8 +660,6 @@ final class SpriteCoordinator: ObservableObject {
                 createMessageWindow(for: session)
             }
         } else if let window = messageWindows[session.id] {
-            // Hide instead of close — avoids expensive NSPanel recreation
-            // if the sprite re-enters an attention state soon
             window.hide()
         }
     }

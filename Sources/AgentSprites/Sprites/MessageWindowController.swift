@@ -81,13 +81,16 @@ final class MessageWindowController {
     func show() {
         guard !isVisible else { return }
         isVisible = true
-        panel.orderFront(nil)
+        if !panel.isVisible {
+            panel.orderFront(nil)
+        }
+        panel.alphaValue = 1
     }
 
     func hide() {
         guard isVisible else { return }
         isVisible = false
-        panel.orderOut(nil)
+        panel.alphaValue = 0
     }
 
     func close() {

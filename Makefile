@@ -74,9 +74,12 @@ format:
 format-check:
 	swift package --allow-writing-to-package-directory swiftformat --dryrun
 
-# Stress testing
+# Stress testing and profiling
 stress: build
 	.build/debug/agentsprites-stress $(STRESS_ARGS)
 
 stress-heavy: build
 	.build/debug/agentsprites-stress --sessions 50 --duration 120 --rate 0.2
+
+profile: build
+	@bash scripts/profile.sh $(PROFILE_ARGS)
