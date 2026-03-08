@@ -157,7 +157,13 @@ struct GeneralSettingsView: View {
                     if updateChecker.isChecking {
                         ProgressView()
                             .controlSize(.small)
-                    } else {
+                    } else if case .none = updateChecker.updateState {
+                        Button("Check Now") {
+                            Task {
+                                await updateChecker.checkForUpdates()
+                            }
+                        }
+                    } else if case .failed = updateChecker.updateState {
                         Button("Check Now") {
                             Task {
                                 await updateChecker.checkForUpdates()
@@ -166,22 +172,78 @@ struct GeneralSettingsView: View {
                     }
                 }
 
-                if let update = updateChecker.availableUpdate {
+                switch updateChecker.updateState {
+                case .none:
+                    EmptyView()
+
+                case .available(let release):
                     HStack {
                         Label {
-                            Text("v\(update.version) available")
+                            Text("v\(release.version) available")
                         } icon: {
                             Circle()
                                 .fill(Color.blue)
                                 .frame(width: 10, height: 10)
                         }
                         Spacer()
-                        Button("Download") {
-                            NSWorkspace.shared.open(update.downloadURL)
+                        Button("Update & Restart") {
+                            updateChecker.downloadAndInstall(release: release)
                         }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.small)
                     }
+
+                case .downloading(let progress):
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text("Downloading update...")
+                            Spacer()
+                            Text("\(Int(progress * 100))%")
+                                .foregroundColor(.secondary)
+                                .monospacedDigit()
+                        }
+                        ProgressView(value: progress)
+                            .progressViewStyle(.linear)
+                    }
+
+                case .readyToInstall:
+                    HStack {
+                        Label {
+                            Text("Ready to install")
+                        } icon: {
+                            Circle()
+                                .fill(Color.green)
+                                .frame(width: 10, height: 10)
+                        }
+                        Spacer()
+                        Button("Restart Now") {
+                            updateChecker.installAndRelaunch()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                    }
+
+                case .installing:
+                    HStack {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Installing update...")
+                    }
+
+                case .failed(let message):
+                    HStack {
+                        Label {
+                            Text("Update failed")
+                        } icon: {
+                            Circle()
+                                .fill(Color.red)
+                                .frame(width: 10, height: 10)
+                        }
+                        Spacer()
+                    }
+                    Text(message)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
                 }
             } header: {
                 Text("Updates")
