@@ -1,4 +1,5 @@
 import AppKit
+import os
 import SpriteKit
 
 /// Caches SKTexture instances keyed by NSImage identity (ObjectIdentifier)
@@ -19,9 +20,11 @@ final class SpriteTextureCache {
             return cached
         }
 
+        os_signpost(.begin, log: AppSignposts.textureCache, name: "TextureCreate")
         let texture = SKTexture(image: image)
         texture.filteringMode = .nearest  // Pixel art crispness
         cache[key] = texture
+        os_signpost(.end, log: AppSignposts.textureCache, name: "TextureCreate")
         return texture
     }
 

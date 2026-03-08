@@ -1,4 +1,4 @@
-.PHONY: build release run install restart restart-app clean lint format bundle
+.PHONY: build release run install restart restart-app clean lint format bundle stress stress-heavy
 
 # Directories
 APP_SUPPORT_DIR := $(HOME)/Library/Application Support/AgentSprites
@@ -73,3 +73,10 @@ format:
 
 format-check:
 	swift package --allow-writing-to-package-directory swiftformat --dryrun
+
+# Stress testing
+stress: build
+	.build/debug/agentsprites-stress $(STRESS_ARGS)
+
+stress-heavy: build
+	.build/debug/agentsprites-stress --sessions 50 --duration 120 --rate 0.2

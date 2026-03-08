@@ -22,6 +22,7 @@ actor SessionManager {
 
     /// Process a session event from CLI notification
     func processEvent(_ event: SessionEvent) {
+        os_signpost(.begin, log: AppSignposts.sessionProcessing, name: "ProcessEvent")
         let startTime = Date()
         logger.info("[TIMING] \(timestamp(), privacy: .public) Processing event: session=\(event.sessionId.prefix(8), privacy: .public), event=\(event.eventName, privacy: .public), metadataOnly=\(event.isMetadataUpdate, privacy: .public)")
 
@@ -79,6 +80,7 @@ actor SessionManager {
             scheduleDoneToIdle(sessionId: event.sessionId)
         }
 
+        os_signpost(.end, log: AppSignposts.sessionProcessing, name: "ProcessEvent")
         changeCallback?(store.activeSessions)
     }
 
