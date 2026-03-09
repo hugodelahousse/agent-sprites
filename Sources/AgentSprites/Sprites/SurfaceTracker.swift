@@ -66,43 +66,42 @@ struct SurfaceTracker {
         currentSurface == .ceiling
     }
 
-    /// Process a physics contact and update surface state.
+    /// Pending contact data to apply in next update (avoids body mutations during contact callback)
+    private(set) var pendingContact: (surface: SpriteSurface, fieldBitMask: UInt32, zeroVerticalVelocity: Bool)?
+
+    /// Process a physics contact and queue surface state change.
+    /// Body mutations are deferred to the coordinator's frame update per Apple best practices.
     /// Only transitions surface when the sprite is falling — ignores contacts
     /// when already settled on a surface to prevent gravity oscillation.
-    /// Also ignores glancing contacts where the sprite is moving too fast
-    /// along the surface (brushing past a ledge edge during fall).
-    mutating func handleContact(normal: CGVector, body: SKPhysicsBody) {
+    mutating func handleContact(normal: CGVector, velocity: CGVector) {
         lastContactTime = CFAbsoluteTimeGetCurrent()
 
-        // Only process contacts when falling (transitioning between surfaces).
-        // When already on a surface, the coordinator handles transitions explicitly.
         guard currentSurface == .falling else { return }
 
-        let vel = body.velocity
-
         if normal.dy > 0.7 {
-            // Skip if falling too fast — just brushing past a ledge edge
-            guard vel.dy > -100 else { return }
-            // Landed on a horizontal surface (floor/ledge) — gravity down
-            currentSurface = .floor  // Coordinator refines to .ledge if applicable
-            body.fieldBitMask = GravityCategory.down
-            body.velocity = CGVector(dx: vel.dx, dy: 0)
+            guard velocity.dy > -100 else { return }
+            pendingContact = (.floor, GravityCategory.down, true)
         } else if normal.dx > 0.7 {
-            guard vel.dx > -100 else { return }
-            // Hit left wall — gravity pulls left
-            currentSurface = .leftWall
-            body.fieldBitMask = GravityCategory.left
+            guard velocity.dx > -100 else { return }
+            pendingContact = (.leftWall, GravityCategory.left, false)
         } else if normal.dx < -0.7 {
-            guard vel.dx < 100 else { return }
-            // Hit right wall — gravity pulls right
-            currentSurface = .rightWall
-            body.fieldBitMask = GravityCategory.right
+            guard velocity.dx < 100 else { return }
+            pendingContact = (.rightWall, GravityCategory.right, false)
         } else if normal.dy < -0.7 {
-            guard vel.dy < 100 else { return }
-            // Hit ceiling — gravity pulls up
-            currentSurface = .ceiling
-            body.fieldBitMask = GravityCategory.up
+            guard velocity.dy < 100 else { return }
+            pendingContact = (.ceiling, GravityCategory.up, false)
         }
+    }
+
+    /// Apply pending contact to the physics body. Called from the coordinator's frame update.
+    mutating func applyPendingContact(body: SKPhysicsBody) {
+        guard let contact = pendingContact else { return }
+        currentSurface = contact.surface
+        body.fieldBitMask = contact.fieldBitMask
+        if contact.zeroVerticalVelocity {
+            body.velocity = CGVector(dx: body.velocity.dx, dy: 0)
+        }
+        pendingContact = nil
     }
 
     /// Check if contact grace period has expired (sprite may have detached)

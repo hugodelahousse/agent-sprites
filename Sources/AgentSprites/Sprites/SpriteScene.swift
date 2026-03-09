@@ -203,7 +203,7 @@ class SpriteScene: SKScene, SKPhysicsContactDelegate {
         body.allowsRotation = false
         body.restitution = 0
         body.friction = 1.0
-        body.linearDamping = 1.0
+        body.linearDamping = 0.3
         body.mass = 1.0
         node.physicsBody = body
     }

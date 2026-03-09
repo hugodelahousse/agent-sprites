@@ -516,32 +516,8 @@ final class SpriteCoordinator: ObservableObject {
               let controller = sceneControllers[displayID],
               let body = controller.scene.spriteBody(sessionId: sessionId) else { return }
 
-        let previousSurface = tracker.currentSurface
-        tracker.handleContact(normal: normal, body: body)
-
-        if tracker.currentSurface != previousSurface {
-            let globalPos = spriteGlobalPosition(sessionId: sessionId) ?? .zero
-            logger.debug("Contact: \(sessionId.prefix(8), privacy: .public) normal=(\(normal.dx, privacy: .public),\(normal.dy, privacy: .public)) \(String(describing: previousSurface), privacy: .public)→\(String(describing: tracker.currentSurface), privacy: .public) at y=\(globalPos.y, privacy: .public)")
-            let screenBounds = controller.screenVisibleFrame
-
-            if case .floor = tracker.currentSurface {
-                // Check if it's actually a ledge or the floor
-                let globalPos = spriteGlobalPosition(sessionId: sessionId) ?? .zero
-                let ledges = windowObserver.getLedges()
-
-                if let ledge = ledges.first(where: { abs($0.y - globalPos.y) < 20 && $0.contains(x: globalPos.x) }) {
-                    tracker.landOnLedge(ledge, body: body)
-                } else {
-                    tracker.landOnFloor(y: screenBounds.minY, screenBounds: screenBounds, body: body)
-                }
-            }
-
-            // Start idling when landing
-            if previousSurface == .falling && tracker.currentSurface != .falling {
-                wanderBehaviors[sessionId]?.startIdling(stuck: true)
-            }
-        }
-
+        // Queue contact — body mutations are deferred to next frame update
+        tracker.handleContact(normal: normal, velocity: body.velocity)
         surfaceTrackers[sessionId] = tracker
     }
 
@@ -967,17 +943,6 @@ final class SpriteCoordinator: ObservableObject {
             }
         }
 
-        // Log falling sprite positions for debugging
-        for id in wanderBehaviors.keys {
-            if let tracker = surfaceTrackers[id], tracker.currentSurface == .falling,
-               let pos = allSpritePositions[id],
-               let displayID = spriteScreenAssignment[id],
-               let controller = sceneControllers[displayID],
-               let body = controller.scene.spriteBody(sessionId: id) {
-                logger.debug("FALL \(id.prefix(8), privacy: .public) y=\(pos.y, privacy: .public) vel=\(body.velocity.dy, privacy: .public) dynamic=\(body.isDynamic, privacy: .public) field=\(body.fieldBitMask, privacy: .public)")
-            }
-        }
-
         // Update wander behaviors and apply velocities
         for id in wanderBehaviors.keys {
             guard var wander = wanderBehaviors[id],
@@ -988,6 +953,25 @@ final class SpriteCoordinator: ObservableObject {
             guard let globalPos = allSpritePositions[id] else { continue }
             guard let assignedDisplayID = spriteScreenAssignment[id],
                   let spriteController = sceneControllers[assignedDisplayID] else { continue }
+
+            // Apply deferred contact from physics callback
+            if tracker.pendingContact != nil,
+               let body = spriteController.scene.spriteBody(sessionId: id) {
+                let previousSurface = tracker.currentSurface
+                tracker.applyPendingContact(body: body)
+                if previousSurface == .falling && tracker.currentSurface != .falling {
+                    wander.startIdling(stuck: true)
+                }
+                // Refine .floor to ledge or actual floor
+                if case .floor = tracker.currentSurface {
+                    let ledges = windowObserver.getLedges()
+                    if let ledge = ledges.first(where: { abs($0.y - globalPos.y) < 20 && $0.contains(x: globalPos.x) }) {
+                        tracker.landOnLedge(ledge, body: body)
+                    } else {
+                        tracker.landOnFloor(y: spriteController.screenVisibleFrame.minY, screenBounds: spriteController.screenVisibleFrame, body: body)
+                    }
+                }
+            }
             let screenBounds = spriteController.screenVisibleFrame
 
             let isHovered = spriteHovered[id] ?? false
@@ -1035,6 +1019,7 @@ final class SpriteCoordinator: ObservableObject {
                 wallMinY: tracker.currentWallMinY,
                 wallMaxY: tracker.currentWallMaxY,
                 groundY: screenBounds.minY,
+                ledgeY: tracker.currentLedgeY,
                 shouldWander: shouldWander
             ))
 

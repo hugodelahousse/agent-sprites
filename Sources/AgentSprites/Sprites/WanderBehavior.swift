@@ -46,6 +46,7 @@ struct WanderBehavior {
         let wallMinY: CGFloat?
         let wallMaxY: CGFloat?
         let groundY: CGFloat
+        let ledgeY: CGFloat?
         let shouldWander: Bool
     }
 
@@ -61,7 +62,7 @@ struct WanderBehavior {
 
         switch surface {
         case .floor, .ledge:
-            return updateHorizontalWander(position: position, screenBounds: screenBounds, ledges: ledges, surface: surface)
+            return updateHorizontalWander(position: position, screenBounds: screenBounds, ledges: ledges, surface: surface, ledgeY: ctx.ledgeY)
         case .ceiling:
             return updateCeilingWander(position: position, screenBounds: screenBounds)
         case .leftWall, .rightWall:
@@ -206,11 +207,11 @@ struct WanderBehavior {
 
     // MARK: - Private Wander Updates
 
-    private mutating func updateHorizontalWander(position: CGPoint, screenBounds: CGRect, ledges: [WindowObserver.Ledge], surface: SpriteSurface) -> CGFloat {
+    private mutating func updateHorizontalWander(position: CGPoint, screenBounds: CGRect, ledges: [WindowObserver.Ledge], surface: SpriteSurface, ledgeY: CGFloat?) -> CGFloat {
         switch wanderState {
         case .idling, .stuckIdling:
             if hasIdleExpired() {
-                pickNewTarget(surface: surface, position: position, screenBounds: screenBounds, ledges: ledges, ledgeY: nil, edgeMargin: 32)
+                pickNewTarget(surface: surface, position: position, screenBounds: screenBounds, ledges: ledges, ledgeY: ledgeY, edgeMargin: 32)
                 wanderState = .walking
             }
             return 0
