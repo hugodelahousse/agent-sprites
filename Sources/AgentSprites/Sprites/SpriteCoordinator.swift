@@ -38,12 +38,13 @@ final class SpriteCoordinator: ObservableObject {
 
     private let logger = Logger(subsystem: "com.agentsprites.app", category: "SpriteCoordinator")
 
-    // Per-screen scene controllers (replaces per-sprite windows)
+    // Per-screen scene controllers
     private var sceneControllers: [CGDirectDisplayID: SpriteSceneController] = [:]
     private var spriteScreenAssignment: [String: CGDirectDisplayID] = [:]
 
-    // Per-sprite state (unchanged)
-    private var spritePhysics: [String: SpritePhysics] = [:]
+    // Per-sprite state — SpriteKit physics owns position; we track wander + surface state
+    private var wanderBehaviors: [String: WanderBehavior] = [:]
+    private var surfaceTrackers: [String: SurfaceTracker] = [:]
     private var spriteAnimators: [String: SpriteAnimator] = [:]
     private var spriteCharacters: [String: SpriteCharacter] = [:]
     private var spriteHueRotations: [String: Double] = [:]
@@ -52,11 +53,18 @@ final class SpriteCoordinator: ObservableObject {
     private var spriteHovered: [String: Bool] = [:]
     private var spriteDragging: [String: Bool] = [:]
 
-    // Session info for tooltips (moved from SpriteWindowController)
+    // Drag velocity tracking (moved from SpritePhysics)
+    private var dragVelocityHistory: [String: [CGPoint]] = [:]
+    private var dragLastPosition: [String: CGPoint] = [:]
+    private var dragLastTime: [String: CFTimeInterval] = [:]
+    private static let velocityHistoryCount = 5
+    private static let maxThrowSpeed: CGFloat = 400
+
+    // Session info for tooltips
     private var spriteSessionInfo: [String: SessionInfo] = [:]
     private var spriteHasMessageWindow: [String: Bool] = [:]
 
-    // Message windows (unchanged)
+    // Message windows
     private var messageWindows: [String: MessageWindowController] = [:]
     private var dismissedMessages: [String: SessionStatus] = [:]
     private var lastMessageStatus: [String: SessionStatus] = [:]
@@ -66,16 +74,24 @@ final class SpriteCoordinator: ObservableObject {
     private var tooltipWindow: NSPanel?
     private var tooltipSessionId: String?
 
-    // Animation — driven by SpriteKit's update loop (no CVDisplayLink)
+    // Animation — driven by SpriteKit's update loop
     private var lastFrameTime: CFTimeInterval = 0
     private var sessions: [SessionState] = []
     private var pendingRenderTime: Date?
-    private var lastUpdateFrameId: UInt64 = 0  // Dedup multiple scenes calling per frame
-    private var lastLedgeCount: Int = -1  // Track ledge changes cheaply
+    private var lastUpdateFrameId: UInt64 = 0
+    private var lastLedgeCount: Int = -1
+    private var lastSurfaceRebuildLedgeCount: Int = -1
+
+    /// Per-sprite cooldown to prevent rapid surface transitions at corners
+    private var lastTransitionTime: [String: CFAbsoluteTime] = [:]
+    private static let transitionCooldown: TimeInterval = 0.3
 
     private let terminalFocuser = TerminalFocuser()
     private let windowObserver = WindowObserver.shared
     private let ledgeDebugOverlay = LedgeDebugOverlay()
+
+    // Physics constants matching original SpritePhysics
+    private static let edgeMargin: CGFloat = 32
 
     @Published var debugLedgesEnabled: Bool = false {
         didSet {
@@ -109,7 +125,6 @@ final class SpriteCoordinator: ObservableObject {
     }
 
     init() {
-        // Default to enabled on first launch (bool(forKey:) returns false if key doesn't exist)
         if UserDefaults.standard.object(forKey: Self.enabledKey) == nil {
             UserDefaults.standard.set(true, forKey: Self.enabledKey)
         }
@@ -138,13 +153,11 @@ final class SpriteCoordinator: ObservableObject {
 
     private func reloadAllSprites() {
         let currentSessions = sessions
-        // Remove all sprites from all scenes
-        for id in spritePhysics.keys {
+        for id in Array(wanderBehaviors.keys) {
             removeSprite(forSessionId: id)
         }
         nextSpriteIndex = 0
         SpriteTextureCache.shared.clear()
-        // Recreate sprites for current sessions
         for session in currentSessions {
             createSprite(for: session)
         }
@@ -170,9 +183,7 @@ final class SpriteCoordinator: ObservableObject {
         let currentScreens = Set(NSScreen.screens.map { $0.displayID })
         let existingScreens = Set(sceneControllers.keys)
 
-        // Remove controllers for disconnected screens
         for displayID in existingScreens.subtracting(currentScreens) {
-            // Move any sprites on this screen to another screen
             let spritesOnScreen = spriteScreenAssignment.filter { $0.value == displayID }.map { $0.key }
             for sessionId in spritesOnScreen {
                 if let newScreen = NSScreen.main {
@@ -183,13 +194,11 @@ final class SpriteCoordinator: ObservableObject {
             sceneControllers.removeValue(forKey: displayID)
         }
 
-        // Update frames for existing screens
         for screen in NSScreen.screens {
             sceneControllers[screen.displayID]?.updateFrame(for: screen)
         }
     }
 
-    /// Get or create a scene controller for the given screen
     private func ensureSceneController(for screen: NSScreen) -> SpriteSceneController {
         let displayID = screen.displayID
         if let existing = sceneControllers[displayID] {
@@ -198,6 +207,8 @@ final class SpriteCoordinator: ObservableObject {
 
         let controller = SpriteSceneController(screen: screen)
         setupSceneCallbacks(controller)
+        // Create permanent screen boundary edges (floor, ceiling, screen walls)
+        controller.scene.setupBoundaries(visibleFrame: screen.visibleFrame, screenFrame: screen.frame)
         sceneControllers[displayID] = controller
         return controller
     }
@@ -235,6 +246,11 @@ final class SpriteCoordinator: ObservableObject {
         scene.onSpriteDragEnd = { [weak self] sessionId in
             self?.handleDragEnd(sessionId: sessionId)
         }
+
+        // Contact delegate callback
+        scene.onContactBegan = { [weak self] sessionId, normal in
+            self?.handleContact(sessionId: sessionId, normal: normal)
+        }
     }
 
     // MARK: - Public API
@@ -249,17 +265,15 @@ final class SpriteCoordinator: ObservableObject {
             return
         }
 
-        let currentIds = Set(spritePhysics.keys)
+        let currentIds = Set(wanderBehaviors.keys)
         let newIds = Set(newSessions.map { $0.id })
 
-        // Remove sprites for sessions that no longer exist
         for id in currentIds.subtracting(newIds) {
             removeSprite(forSessionId: id)
         }
 
-        // Add sprites for new sessions
         for session in newSessions {
-            if spritePhysics[session.id] == nil {
+            if wanderBehaviors[session.id] == nil {
                 logger.info("[TIMING] \(timestamp(), privacy: .public) Creating new sprite for session \(session.id.prefix(8), privacy: .public)")
                 createSprite(for: session)
             } else {
@@ -267,7 +281,6 @@ final class SpriteCoordinator: ObservableObject {
             }
         }
 
-        // Update message windows on session change (not per-frame)
         for session in newSessions {
             updateMessageWindow(for: session)
             spriteHasMessageWindow[session.id] = messageWindows[session.id]?.isVisible ?? false
@@ -300,14 +313,15 @@ final class SpriteCoordinator: ObservableObject {
 
         let margin: CGFloat = 80
         let startX = CGFloat.random(in: (screenBounds.minX + margin)...(screenBounds.maxX - margin))
-        let groundY = screenBounds.minY
 
         // Spawn from top of screen
         let startY = screenBounds.maxY - 60
 
-        var physics = SpritePhysics(x: startX, groundY: groundY)
-        physics.position = CGPoint(x: startX, y: startY)
-        spritePhysics[session.id] = physics
+        // Initialize wander behavior and surface tracker
+        var wander = WanderBehavior(startX: startX)
+        wander.startIdling(stuck: true)
+        wanderBehaviors[session.id] = wander
+        surfaceTrackers[session.id] = SurfaceTracker()
 
         // Get character
         let character: SpriteCharacter
@@ -334,7 +348,6 @@ final class SpriteCoordinator: ObservableObject {
         let hueRotation = CharacterManager.shared.usesHueRotation ? hueForPath(session.workingDirectory) : 0
         spriteHueRotations[session.id] = hueRotation
 
-        // Create shader if hue rotation is needed
         if hueRotation != 0 {
             spriteShaders[session.id] = HueRotationShader.shader(hueAngleDegrees: hueRotation)
         }
@@ -343,7 +356,6 @@ final class SpriteCoordinator: ObservableObject {
         spriteDragging[session.id] = false
         spriteHasMessageWindow[session.id] = false
 
-        // Store session info
         spriteSessionInfo[session.id] = SessionInfo(
             name: session.displayName,
             status: session.status.displayName,
@@ -356,15 +368,19 @@ final class SpriteCoordinator: ObservableObject {
         let controller = ensureSceneController(for: screen)
         spriteScreenAssignment[session.id] = screen.displayID
 
-        // Get initial texture
         if let image = animator.currentImage {
             let texture = SpriteTextureCache.shared.texture(for: image)
-            let localPos = globalToLocal(physics.position, screen: screen)
+            let localPos = globalToLocal(CGPoint(x: startX, y: startY), screen: screen)
             controller.scene.addSprite(sessionId: session.id, texture: texture, size: CGSize(width: 64, height: 64))
-            controller.scene.updateSprite(
+            // Add physics body
+            controller.scene.addSpritePhysicsBody(sessionId: session.id)
+            // Set initial position
+            if let node = controller.scene.spriteNode(sessionId: session.id) {
+                node.position = localPos
+            }
+            controller.scene.updateSpriteVisuals(
                 sessionId: session.id,
                 texture: texture,
-                position: localPos,
                 facingRight: true,
                 surfaceRotation: 0,
                 shader: spriteShaders[session.id]
@@ -372,7 +388,6 @@ final class SpriteCoordinator: ObservableObject {
         }
 
         controller.updatePauseState()
-
         logger.debug("Created sprite for session: \(session.id, privacy: .public)")
     }
 
@@ -395,7 +410,6 @@ final class SpriteCoordinator: ObservableObject {
     }
 
     private func removeSprite(forSessionId id: String) {
-        // Remove from scene
         if let displayID = spriteScreenAssignment[id],
            let controller = sceneControllers[displayID] {
             _ = controller.scene.removeSprite(sessionId: id)
@@ -403,7 +417,8 @@ final class SpriteCoordinator: ObservableObject {
         }
 
         spriteScreenAssignment.removeValue(forKey: id)
-        spritePhysics.removeValue(forKey: id)
+        wanderBehaviors.removeValue(forKey: id)
+        surfaceTrackers.removeValue(forKey: id)
         spriteAnimators.removeValue(forKey: id)
         spriteCharacters.removeValue(forKey: id)
         spriteHueRotations.removeValue(forKey: id)
@@ -412,8 +427,9 @@ final class SpriteCoordinator: ObservableObject {
         spriteDragging.removeValue(forKey: id)
         spriteSessionInfo.removeValue(forKey: id)
         spriteHasMessageWindow.removeValue(forKey: id)
+        dragVelocityHistory.removeValue(forKey: id)
+        dragLastPosition.removeValue(forKey: id)
 
-        // Clean up tooltip if it's for this sprite
         if tooltipSessionId == id {
             hideTooltip()
         }
@@ -429,33 +445,37 @@ final class SpriteCoordinator: ObservableObject {
         updateAnimationState()
     }
 
-    /// Reassign a sprite from its current screen to a new screen
     private func reassignSprite(sessionId: String, to newScreen: NSScreen) {
         let newDisplayID = newScreen.displayID
 
-        // Remove from old scene
         if let oldDisplayID = spriteScreenAssignment[sessionId],
            let oldController = sceneControllers[oldDisplayID] {
             _ = oldController.scene.removeSprite(sessionId: sessionId)
             oldController.updatePauseState()
         }
 
-        // Add to new scene
         let controller = ensureSceneController(for: newScreen)
         spriteScreenAssignment[sessionId] = newDisplayID
 
         if let animator = spriteAnimators[sessionId],
            let image = animator.currentImage,
-           let physics = spritePhysics[sessionId] {
+           let tracker = surfaceTrackers[sessionId] {
             let texture = SpriteTextureCache.shared.texture(for: image)
-            let localPos = globalToLocal(physics.position, screen: newScreen)
             controller.scene.addSprite(sessionId: sessionId, texture: texture, size: CGSize(width: 64, height: 64))
-            controller.scene.updateSprite(
+            controller.scene.addSpritePhysicsBody(sessionId: sessionId)
+
+            // Transfer position and velocity from old node
+            let spritePos = spriteGlobalPosition(sessionId: sessionId) ?? CGPoint(x: newScreen.frame.midX, y: newScreen.frame.midY)
+            let localPos = globalToLocal(spritePos, screen: newScreen)
+            if let node = controller.scene.spriteNode(sessionId: sessionId) {
+                node.position = localPos
+            }
+
+            controller.scene.updateSpriteVisuals(
                 sessionId: sessionId,
                 texture: texture,
-                position: localPos,
                 facingRight: animator.facingRight,
-                surfaceRotation: physics.surfaceRotation,
+                surfaceRotation: tracker.surfaceRotation,
                 shader: spriteShaders[sessionId]
             )
         }
@@ -465,7 +485,7 @@ final class SpriteCoordinator: ObservableObject {
 
     private func showAllSprites() {
         for session in sessions {
-            if spritePhysics[session.id] == nil {
+            if wanderBehaviors[session.id] == nil {
                 createSprite(for: session)
             }
             updateMessageWindow(for: session)
@@ -488,17 +508,50 @@ final class SpriteCoordinator: ObservableObject {
         await terminalFocuser.focusSession(session)
     }
 
+    // MARK: - Private - Physics Contact Handling
+
+    private func handleContact(sessionId: String, normal: CGVector) {
+        guard var tracker = surfaceTrackers[sessionId],
+              let displayID = spriteScreenAssignment[sessionId],
+              let controller = sceneControllers[displayID],
+              let body = controller.scene.spriteBody(sessionId: sessionId) else { return }
+
+        let previousSurface = tracker.currentSurface
+        tracker.handleContact(normal: normal, body: body)
+
+        if tracker.currentSurface != previousSurface {
+            let globalPos = spriteGlobalPosition(sessionId: sessionId) ?? .zero
+            logger.debug("Contact: \(sessionId.prefix(8), privacy: .public) normal=(\(normal.dx, privacy: .public),\(normal.dy, privacy: .public)) \(String(describing: previousSurface), privacy: .public)→\(String(describing: tracker.currentSurface), privacy: .public) at y=\(globalPos.y, privacy: .public)")
+            let screenBounds = controller.screenVisibleFrame
+
+            if case .floor = tracker.currentSurface {
+                // Check if it's actually a ledge or the floor
+                let globalPos = spriteGlobalPosition(sessionId: sessionId) ?? .zero
+                let ledges = windowObserver.getLedges()
+
+                if let ledge = ledges.first(where: { abs($0.y - globalPos.y) < 20 && $0.contains(x: globalPos.x) }) {
+                    tracker.landOnLedge(ledge, body: body)
+                } else {
+                    tracker.landOnFloor(y: screenBounds.minY, screenBounds: screenBounds, body: body)
+                }
+            }
+
+            // Start idling when landing
+            if previousSurface == .falling && tracker.currentSurface != .falling {
+                wanderBehaviors[sessionId]?.startIdling(stuck: true)
+            }
+        }
+
+        surfaceTrackers[sessionId] = tracker
+    }
+
     // MARK: - Private - Hover / Tooltip
 
-    /// Track which sprite ID is currently hovered (driven by animation frame polling)
     private var lastHoveredId: String?
 
-    /// Called each animation frame with the sprite ID under the mouse (or nil)
     private func updateHoverState(hoveredId: String?) {
-        // No change
         guard hoveredId != lastHoveredId else { return }
 
-        // Exit old hover
         if let oldId = lastHoveredId {
             spriteHovered[oldId] = false
             if tooltipSessionId == oldId {
@@ -506,7 +559,6 @@ final class SpriteCoordinator: ObservableObject {
             }
         }
 
-        // Enter new hover
         if let newId = hoveredId {
             spriteHovered[newId] = true
             showTooltip(for: newId)
@@ -528,7 +580,6 @@ final class SpriteCoordinator: ObservableObject {
     }
 
     private func showTooltip(for sessionId: String) {
-        // Don't show tooltip when message window is visible
         guard spriteHasMessageWindow[sessionId] != true else { return }
 
         if tooltipWindow == nil {
@@ -577,14 +628,13 @@ final class SpriteCoordinator: ObservableObject {
 
     private func positionTooltip(for sessionId: String) {
         guard let tooltip = tooltipWindow,
-              let hostingView = tooltip.contentView as? NSHostingView<TooltipView>,
-              let physics = spritePhysics[sessionId] else { return }
+              let hostingView = tooltip.contentView as? NSHostingView<TooltipView> else { return }
+
+        guard let spritePos = spriteGlobalPosition(sessionId: sessionId) else { return }
 
         let fittingSize = hostingView.fittingSize
         tooltip.setContentSize(fittingSize)
 
-        // Position centered above the sprite (global Cocoa coordinates)
-        let spritePos = physics.position
         let spriteSize: CGFloat = 64
         let gap: CGFloat = 8
         var tooltipOrigin = CGPoint(
@@ -592,7 +642,6 @@ final class SpriteCoordinator: ObservableObject {
             y: spritePos.y + spriteSize + gap
         )
 
-        // Keep on screen
         let screen = screenContaining(spritePos) ?? NSScreen.main
         if let screen {
             let screenFrame = screen.visibleFrame
@@ -612,7 +661,20 @@ final class SpriteCoordinator: ObservableObject {
 
     private func handleDragStart(sessionId: String) {
         spriteDragging[sessionId] = true
-        spritePhysics[sessionId]?.startDrag()
+        dragVelocityHistory[sessionId] = []
+        dragLastPosition[sessionId] = spriteGlobalPosition(sessionId: sessionId)
+
+        // Make physics body non-dynamic during drag
+        if let displayID = spriteScreenAssignment[sessionId],
+           let controller = sceneControllers[displayID],
+           let body = controller.scene.spriteBody(sessionId: sessionId) {
+            body.isDynamic = false
+        }
+
+        // Clear surface state
+        surfaceTrackers[sessionId]?.currentSurface = .falling
+        surfaceTrackers[sessionId]?.clearAllCaches()
+
         hideTooltip()
         logger.debug("Drag started for session: \(sessionId, privacy: .public)")
     }
@@ -621,19 +683,66 @@ final class SpriteCoordinator: ObservableObject {
         guard spriteDragging[sessionId] == true else { return }
 
         let now = CACurrentMediaTime()
-        let deltaTime = lastFrameTime > 0 ? now - lastFrameTime : 1.0 / 60.0
 
-        let spriteCenter = CGPoint(
-            x: screenPoint.x,
-            y: screenPoint.y
-        )
+        // Track velocity for throw using actual event timestamps
+        if let lastPos = dragLastPosition[sessionId],
+           let lastTime = dragLastTime[sessionId] {
+            let dt = now - lastTime
+            if dt > 0.001 {
+                let dragVelocity = CGPoint(
+                    x: (screenPoint.x - lastPos.x) / CGFloat(dt),
+                    y: (screenPoint.y - lastPos.y) / CGFloat(dt)
+                )
+                var history = dragVelocityHistory[sessionId] ?? []
+                history.append(dragVelocity)
+                if history.count > Self.velocityHistoryCount {
+                    history.removeFirst()
+                }
+                dragVelocityHistory[sessionId] = history
+            }
+        }
+        dragLastPosition[sessionId] = screenPoint
+        dragLastTime[sessionId] = now
 
-        spritePhysics[sessionId]?.updateDrag(to: spriteCenter, deltaTime: CGFloat(deltaTime))
+        // Move the sprite node directly (body is non-dynamic)
+        if let displayID = spriteScreenAssignment[sessionId],
+           let controller = sceneControllers[displayID] {
+            let localPos = CGPoint(
+                x: screenPoint.x - controller.screenOrigin.x,
+                y: screenPoint.y - controller.screenOrigin.y
+            )
+            controller.scene.spriteNode(sessionId: sessionId)?.position = localPos
+        }
     }
 
     private func handleDragEnd(sessionId: String) {
         spriteDragging[sessionId] = false
-        spritePhysics[sessionId]?.endDrag()
+
+        // Re-enable physics and apply throw velocity
+        if let displayID = spriteScreenAssignment[sessionId],
+           let controller = sceneControllers[displayID],
+           let body = controller.scene.spriteBody(sessionId: sessionId) {
+            body.isDynamic = true
+            body.fieldBitMask = GravityCategory.down
+
+            // Compute throw velocity from history
+            if let history = dragVelocityHistory[sessionId], !history.isEmpty {
+                let avg = history.reduce(CGPoint.zero) { CGPoint(x: $0.x + $1.x, y: $0.y + $1.y) }
+                let count = CGFloat(history.count)
+                let throwVel = CGVector(
+                    dx: max(-Self.maxThrowSpeed, min(Self.maxThrowSpeed, avg.x / count)),
+                    dy: max(-Self.maxThrowSpeed, min(Self.maxThrowSpeed, avg.y / count))
+                )
+                body.velocity = throwVel
+            }
+        }
+
+        surfaceTrackers[sessionId]?.currentSurface = .falling
+        surfaceTrackers[sessionId]?.clearAllCaches()
+        dragVelocityHistory.removeValue(forKey: sessionId)
+        dragLastPosition.removeValue(forKey: sessionId)
+        dragLastTime.removeValue(forKey: sessionId)
+
         logger.debug("Drag ended for session: \(sessionId, privacy: .public)")
     }
 
@@ -643,7 +752,6 @@ final class SpriteCoordinator: ObservableObject {
         let needsMessage = SpriteColors.needsAttention(for: session.status)
         let lastNeeded = lastMessageStatus[session.id].map { SpriteColors.needsAttention(for: $0) }
 
-        // Skip if attention state hasn't changed (avoid expensive orderFront/orderOut)
         if lastNeeded == needsMessage, lastMessageStatus[session.id] == session.status {
             return
         }
@@ -670,7 +778,7 @@ final class SpriteCoordinator: ObservableObject {
     }
 
     private func createMessageWindow(for session: SessionState) {
-        guard let physics = spritePhysics[session.id] else { return }
+        guard let spritePos = spriteGlobalPosition(sessionId: session.id) else { return }
 
         let message = messageFor(status: session.status)
         let window = MessageWindowController(
@@ -679,7 +787,7 @@ final class SpriteCoordinator: ObservableObject {
             summary: session.summary,
             message: message,
             status: session.status,
-            spritePosition: physics.position
+            spritePosition: spritePos
         )
 
         window.onFocusTerminal = { [weak self] in
@@ -716,11 +824,12 @@ final class SpriteCoordinator: ObservableObject {
     }
 
     private func getSpriteBounds() -> [SpriteBounds] {
-        spritePhysics.map { id, physics in
+        wanderBehaviors.keys.compactMap { id in
+            guard let pos = spriteGlobalPosition(sessionId: id) else { return nil }
             let session = sessions.first { $0.id == id }
             return SpriteBounds(
                 sessionId: id,
-                position: physics.position,
+                position: pos,
                 size: CGSize(width: 64, height: 64),
                 status: session?.status
             )
@@ -728,6 +837,19 @@ final class SpriteCoordinator: ObservableObject {
     }
 
     // MARK: - Private - Coordinate Conversion
+
+    /// Get sprite position in global Cocoa coordinates (from SKNode position + cached screen origin)
+    private func spriteGlobalPosition(sessionId: String) -> CGPoint? {
+        guard let displayID = spriteScreenAssignment[sessionId],
+              let controller = sceneControllers[displayID],
+              let node = controller.scene.spriteNode(sessionId: sessionId) else { return nil }
+
+        let origin = controller.screenOrigin
+        return CGPoint(
+            x: node.position.x + origin.x,
+            y: node.position.y + origin.y
+        )
+    }
 
     /// Convert global Cocoa coordinates to scene-local coordinates
     private func globalToLocal(_ point: CGPoint, screen: NSScreen) -> CGPoint {
@@ -737,22 +859,24 @@ final class SpriteCoordinator: ObservableObject {
         )
     }
 
-    /// Find the screen containing a point and return the display ID
     private func displayIDContaining(_ point: CGPoint) -> CGDirectDisplayID? {
-        let screen = NSScreen.screens.first { $0.frame.contains(point) } ?? NSScreen.main
-        return screen?.displayID
+        // Use cached screen frames from controllers to avoid NSScreen.screens lookups
+        for (displayID, controller) in sceneControllers {
+            if controller.screenFrame.contains(point) {
+                return displayID
+            }
+        }
+        return sceneControllers.keys.first
     }
 
     // MARK: - Private - Animation
 
-    /// Called by SpriteKit's update loop from each scene.
-    /// Multiple scenes may call this per frame; we dedup using a frame counter.
+    // Called by SpriteKit's update loop from each scene.
+    // Multiple scenes may call this per frame; we dedup using a frame counter.
     // swiftlint:disable:next cyclomatic_complexity function_body_length
     private func animationFrame(currentTime: CFTimeInterval) {
         guard isEnabled else { return }
 
-        // Dedup: SpriteKit's currentTime is the same for all scenes in a single frame
-        // Use bit pattern as a cheap frame ID
         let frameId = currentTime.bitPattern
         guard frameId != lastUpdateFrameId else { return }
         lastUpdateFrameId = frameId
@@ -766,65 +890,191 @@ final class SpriteCoordinator: ObservableObject {
         }
 
         let rawDelta = lastFrameTime > 0 ? currentTime - lastFrameTime : 1.0 / 60.0
-        let deltaTime = min(rawDelta, 0.5)  // Cap at 500ms to prevent huge jumps after pauses/throttle
+        let deltaTime = min(rawDelta, 0.5)
         lastFrameTime = currentTime
 
-        // Update mouse passthrough and detect hover from mouse position
+        // Update mouse passthrough and detect hover
         var hoveredIdThisFrame: String?
         for (_, controller) in sceneControllers {
             if let hitId = controller.updateMousePassthrough() {
                 hoveredIdThisFrame = hitId
             }
         }
-
-        // Drive hover state from mouse position (works even when panel was ignoring events)
         updateHoverState(hoveredId: hoveredIdThisFrame)
+
+        // Early exit if no sprites to update
+        guard !wanderBehaviors.isEmpty else {
+            os_signpost(.end, log: AppSignposts.renderLoop, name: "AnimationFrame")
+            return
+        }
 
         let ledges = windowObserver.getLedges()
         let walls = windowObserver.getWalls()
 
-        // Detect ledge layout changes cheaply (count change = windows moved/appeared/disappeared)
+        // Detect ledge layout changes
         let ledgesChanged = ledges.count != lastLedgeCount
         lastLedgeCount = ledges.count
 
-        let allSpritePositions: [String: CGPoint] = spritePhysics.mapValues { $0.position }
+        if ledgesChanged || ledges.count != lastSurfaceRebuildLedgeCount {
+            lastSurfaceRebuildLedgeCount = ledges.count
 
-        // Update all physics
-        for id in spritePhysics.keys {
-            guard var physics = spritePhysics[id] else { continue }
-            let isDragging = spriteDragging[id] ?? false
+            // Step 1: Remove old dynamic surfaces FIRST so vanished ledge bodies
+            // are gone before the next physics step
+            for (_, controller) in sceneControllers {
+                controller.scene.removeDynamicSurfaces()
+            }
 
-            if !isDragging {
-                guard let spriteScreen = screenContaining(physics.position) else { continue }
-                let screenBounds = spriteScreen.visibleFrame
+            // Step 2: Set sprites on vanished ledges to falling (no old edge body to catch them)
+            for id in wanderBehaviors.keys {
+                guard var tracker = surfaceTrackers[id],
+                      tracker.currentSurface == .ledge,
+                      let ledgeY = tracker.currentLedgeY else { continue }
 
-                let otherPositions = allSpritePositions.filter { $0.key != id }.map { $0.value }
-
-                let isHovered = spriteHovered[id] ?? false
-                let hasMessageWindow = messageWindows[id] != nil
-
-                let session = sessions.first { $0.id == id }
-                let shouldWander: Bool
-                if isHovered || hasMessageWindow {
-                    shouldWander = false
-                } else {
-                    switch session?.status {
-                    case .working, .waitingForInput, .waitingForPermission:
-                        shouldWander = false
-                    default:
-                        shouldWander = true
+                let globalPos = spriteGlobalPosition(sessionId: id) ?? .zero
+                let ledgeStillExists = ledges.contains { ledge in
+                    abs(ledge.y - ledgeY) < 10 && ledge.contains(x: globalPos.x)
+                }
+                if !ledgeStillExists {
+                    if let displayID = spriteScreenAssignment[id],
+                       let controller = sceneControllers[displayID],
+                       let body = controller.scene.spriteBody(sessionId: id) {
+                        logger.debug("Ledge vanished for \(id.prefix(8), privacy: .public) at y=\(globalPos.y, privacy: .public) dynamic=\(body.isDynamic, privacy: .public), starting fall")
+                        body.isDynamic = true
+                        tracker.startFalling(body: body)
+                        body.velocity = CGVector(dx: 0, dy: -50)
+                        surfaceTrackers[id] = tracker
+                        wanderBehaviors[id]?.startIdling(stuck: true)
+                        controller.setNeedsFullFrameRate(true)
                     }
                 }
+            }
 
-                physics.groundY = screenBounds.minY
-                physics.update(deltaTime: CGFloat(deltaTime), screenBounds: screenBounds, ledges: ledges, walls: walls, otherSprites: otherPositions, shouldWander: shouldWander, ledgesChanged: ledgesChanged)
-                spritePhysics[id] = physics
+            // Step 3: Create new dynamic surfaces for current ledges/walls
+            for (_, controller) in sceneControllers {
+                controller.scene.rebuildDynamicSurfaces(
+                    ledges: ledges,
+                    walls: walls,
+                    screenOrigin: controller.screenOrigin
+                )
             }
         }
 
+        // Collect all sprite positions for avoidance
+        var allSpritePositions: [String: CGPoint] = [:]
+        for id in wanderBehaviors.keys {
+            if let pos = spriteGlobalPosition(sessionId: id) {
+                allSpritePositions[id] = pos
+            }
+        }
+
+        // Log falling sprite positions for debugging
+        for id in wanderBehaviors.keys {
+            if let tracker = surfaceTrackers[id], tracker.currentSurface == .falling,
+               let pos = allSpritePositions[id],
+               let displayID = spriteScreenAssignment[id],
+               let controller = sceneControllers[displayID],
+               let body = controller.scene.spriteBody(sessionId: id) {
+                logger.debug("FALL \(id.prefix(8), privacy: .public) y=\(pos.y, privacy: .public) vel=\(body.velocity.dy, privacy: .public) dynamic=\(body.isDynamic, privacy: .public) field=\(body.fieldBitMask, privacy: .public)")
+            }
+        }
+
+        // Update wander behaviors and apply velocities
+        for id in wanderBehaviors.keys {
+            guard var wander = wanderBehaviors[id],
+                  var tracker = surfaceTrackers[id] else { continue }
+            let isDragging = spriteDragging[id] ?? false
+            guard !isDragging else { continue }
+
+            guard let globalPos = allSpritePositions[id] else { continue }
+            guard let assignedDisplayID = spriteScreenAssignment[id],
+                  let spriteController = sceneControllers[assignedDisplayID] else { continue }
+            let screenBounds = spriteController.screenVisibleFrame
+
+            let isHovered = spriteHovered[id] ?? false
+            let hasMessageWindow = messageWindows[id] != nil
+
+            let session = sessions.first { $0.id == id }
+            let shouldWander: Bool
+            if isHovered || hasMessageWindow {
+                shouldWander = false
+            } else {
+                switch session?.status {
+                case .working, .waitingForInput, .waitingForPermission:
+                    shouldWander = false
+                default:
+                    shouldWander = true
+                }
+            }
+
+            // Sprite avoidance every 10th frame
+            wander.frameCount &+= 1
+            if shouldWander, wander.frameCount.isMultiple(of: 10) {
+                let otherPositions = allSpritePositions.filter { $0.key != id }.map { $0.value }
+                let body = sceneControllers[spriteScreenAssignment[id] ?? 0]?.scene.spriteBody(sessionId: id)
+                let currentVelocity = CGPoint(x: body?.velocity.dx ?? 0, y: body?.velocity.dy ?? 0)
+                wander.checkForSpritesAhead(context: WanderBehavior.AvoidanceContext(
+                    surface: tracker.currentSurface,
+                    position: globalPos,
+                    velocity: currentVelocity,
+                    otherSprites: otherPositions,
+                    screenBounds: screenBounds,
+                    ledges: ledges,
+                    groundY: screenBounds.minY,
+                    ledgeMinX: tracker.currentLedgeMinX,
+                    ledgeMaxX: tracker.currentLedgeMaxX
+                ))
+            }
+
+            // Get desired speed from wander
+            let desiredSpeed = wander.update(context: WanderBehavior.UpdateContext(
+                surface: tracker.currentSurface,
+                position: globalPos,
+                screenBounds: screenBounds,
+                ledges: ledges,
+                walls: walls,
+                wallMinY: tracker.currentWallMinY,
+                wallMaxY: tracker.currentWallMaxY,
+                groundY: screenBounds.minY,
+                shouldWander: shouldWander
+            ))
+
+            // Apply velocity to physics body based on surface orientation
+            if let displayID = spriteScreenAssignment[id],
+               let controller = sceneControllers[displayID],
+               let body = controller.scene.spriteBody(sessionId: id) {
+
+                switch tracker.currentSurface {
+                case .floor, .ledge, .ceiling:
+                    // Horizontal movement — physics handles vertical via gravity
+                    body.velocity = CGVector(dx: desiredSpeed, dy: body.velocity.dy)
+                case .leftWall, .rightWall, .windowWall:
+                    // Vertical movement — physics handles horizontal via gravity
+                    body.velocity = CGVector(dx: body.velocity.dx, dy: desiredSpeed)
+                case .falling:
+                    break  // Let gravity do its thing
+                }
+
+                // Handle surface-specific transitions
+                handleSurfaceTransitions(
+                    id: id,
+                    tracker: &tracker,
+                    wander: &wander,
+                    body: body,
+                    globalPos: globalPos,
+                    screenBounds: screenBounds,
+                    ledges: ledges,
+                    walls: walls,
+                    ledgesChanged: ledgesChanged
+                )
+            }
+
+            wanderBehaviors[id] = wander
+            surfaceTrackers[id] = tracker
+        }
+
         // Update animators and scene nodes
-        for id in spritePhysics.keys {
-            guard let physics = spritePhysics[id],
+        for id in wanderBehaviors.keys {
+            guard let tracker = surfaceTrackers[id],
                   var animator = spriteAnimators[id] else { continue }
 
             let isHovered = spriteHovered[id] ?? false
@@ -834,22 +1084,42 @@ final class SpriteCoordinator: ObservableObject {
             let session = sessions.first { $0.id == id }
             let status = session?.status ?? .idle
 
-            let effectivelyMoving = (isHovered || hasMessageWindow) && !isDragging ? false : physics.isMoving
+            // Read velocity from physics body
+            let bodyVelocity: CGVector
+            if let displayID = spriteScreenAssignment[id],
+               let controller = sceneControllers[displayID],
+               let body = controller.scene.spriteBody(sessionId: id) {
+                bodyVelocity = body.velocity
+            } else {
+                bodyVelocity = .zero
+            }
+
+            let isMoving: Bool
+            switch tracker.currentSurface {
+            case .leftWall, .rightWall, .windowWall:
+                isMoving = abs(bodyVelocity.dy) > 2
+            default:
+                isMoving = abs(bodyVelocity.dx) > 2
+            }
+
+            let isFalling = tracker.currentSurface == .falling && bodyVelocity.dy < -10
+
+            let effectivelyMoving = (isHovered || hasMessageWindow) && !isDragging ? false : isMoving
             _ = animator.update(
                 deltaTime: deltaTime,
                 status: status,
                 isMoving: effectivelyMoving,
-                velocity: physics.horizontalVelocity,
+                velocity: bodyVelocity.dx,
                 isDragging: isDragging,
-                isFalling: physics.isFalling,
-                isClimbing: physics.isClimbing,
-                verticalVelocity: physics.velocity.y
+                isFalling: isFalling,
+                isClimbing: tracker.isClimbing,
+                verticalVelocity: bodyVelocity.dy
             )
             spriteAnimators[id] = animator
 
             // Determine facing direction with surface correction
             var effectiveFacingRight = animator.facingRight
-            switch physics.currentSurface {
+            switch tracker.currentSurface {
             case .leftWall, .windowWall(_, .left), .ceiling:
                 effectiveFacingRight.toggle()
             default:
@@ -857,69 +1127,229 @@ final class SpriteCoordinator: ObservableObject {
             }
 
             // Check screen assignment and handle transitions
-            let currentDisplayID = spriteScreenAssignment[id]
-            let actualDisplayID = displayIDContaining(physics.position)
+            if let globalPos = allSpritePositions[id] {
+                let currentDisplayID = spriteScreenAssignment[id]
+                let actualDisplayID = displayIDContaining(globalPos)
 
-            if let actual = actualDisplayID, actual != currentDisplayID {
-                // Sprite moved to a different screen
-                if let newScreen = NSScreen.screens.first(where: { $0.displayID == actual }) {
-                    reassignSprite(sessionId: id, to: newScreen)
+                if let actual = actualDisplayID, actual != currentDisplayID {
+                    // Find the screen for reassignment — only needed on actual transitions
+                    if let screen = NSScreen.screens.first(where: { $0.displayID == actual }) {
+                        reassignSprite(sessionId: id, to: screen)
+                    }
                 }
             }
 
-            // Update the sprite node in the assigned scene
+            // Update sprite visuals (position owned by SpriteKit physics)
             if let displayID = spriteScreenAssignment[id],
                let controller = sceneControllers[displayID],
-               let screen = NSScreen.screens.first(where: { $0.displayID == displayID }),
                let image = animator.currentImage {
                 let texture = SpriteTextureCache.shared.texture(for: image)
 
-                // Apply render offset for screen walls so feet appear at the screen edge.
-                // Physics position stays at edgeMargin for wall detection, but visually
-                // the sprite should be flush against the edge.
-                var renderPos = physics.position
-                switch physics.currentSurface {
-                case .leftWall:
-                    renderPos.x = screen.visibleFrame.minX
-                case .rightWall:
-                    renderPos.x = screen.visibleFrame.maxX
-                default:
-                    break
-                }
-
-                let localPos = globalToLocal(renderPos, screen: screen)
-
-                controller.scene.updateSprite(
+                controller.scene.updateSpriteVisuals(
                     sessionId: id,
                     texture: texture,
-                    position: localPos,
                     facingRight: effectiveFacingRight,
-                    surfaceRotation: physics.surfaceRotation,
+                    surfaceRotation: tracker.surfaceRotation,
                     shader: spriteShaders[id]
                 )
             }
 
-            // Update message window position (creation/visibility handled in updateSessions)
-            if messageWindows[id]?.isVisible == true {
-                messageWindows[id]?.updatePosition(spritePosition: physics.position)
+            // Update message window position only when sprite is moving
+            if messageWindows[id]?.isVisible == true, isMoving || isFalling || isDragging,
+               let pos = allSpritePositions[id] {
+                messageWindows[id]?.updatePosition(spritePosition: pos)
             }
 
-            // Update tooltip position if showing for this sprite
+            // Update tooltip position
             if tooltipSessionId == id, spriteHovered[id] == true {
                 positionTooltip(for: id)
             }
         }
 
-        // Throttle frame rate: full speed only when sprites are moving/falling/dragging
-        let needsFullRate = spritePhysics.contains { id, physics in
+        // Throttle frame rate
+        let needsFullRate = wanderBehaviors.keys.contains { id in
             let isDragging = spriteDragging[id] ?? false
-            return physics.isMoving || physics.isFalling || isDragging
+            if isDragging { return true }
+            // Falling or walking sprites need full rate for smooth physics
+            if let tracker = surfaceTrackers[id], tracker.currentSurface == .falling {
+                return true
+            }
+            if let wander = wanderBehaviors[id], wander.wanderState == .walking {
+                return true
+            }
+            guard let displayID = spriteScreenAssignment[id],
+                  let controller = sceneControllers[displayID],
+                  let body = controller.scene.spriteBody(sessionId: id) else { return false }
+            let vel = body.velocity
+            return abs(vel.dx) > 2 || abs(vel.dy) > 2
         }
         for (_, controller) in sceneControllers {
             controller.setNeedsFullFrameRate(needsFullRate)
         }
 
         os_signpost(.end, log: AppSignposts.renderLoop, name: "AnimationFrame")
+    }
+
+    // MARK: - Private - Surface Transitions
+
+    // Handle surface-specific movement transitions (wall climbing, ceiling, ledge validity)
+    // swiftlint:disable:next cyclomatic_complexity function_body_length function_parameter_count
+    private func handleSurfaceTransitions(
+        id: String,
+        tracker: inout SurfaceTracker,
+        wander: inout WanderBehavior,
+        body: SKPhysicsBody,
+        globalPos: CGPoint,
+        screenBounds: CGRect,
+        ledges: [WindowObserver.Ledge],
+        walls: [WindowObserver.Wall],
+        ledgesChanged: Bool
+    ) {
+        // Cooldown prevents rapid back-and-forth transitions at corners.
+        // Only applies to surface-to-surface transitions — falling is never blocked.
+        let now = CFAbsoluteTimeGetCurrent()
+        if tracker.currentSurface != .falling {
+            if let lastTime = lastTransitionTime[id], now - lastTime < Self.transitionCooldown {
+                return
+            }
+        }
+
+        let previousSurface = tracker.currentSurface
+
+        switch tracker.currentSurface {
+        case .floor, .ledge:
+            // Check for wall collision
+            for wall in walls {
+                guard wall.contains(y: globalPos.y, margin: 10) else { continue }
+                let wallMargin: CGFloat = 5
+                if body.velocity.dx > 0 && wall.side == .left {
+                    if globalPos.x >= wall.x - wallMargin && globalPos.x < wall.x + 20 {
+                        tracker.startClimbingWindowWall(wall: wall, body: body)
+                        body.velocity = CGVector(dx: 0, dy: WanderBehavior.climbSpeed)
+                        wander.targetPosition = wall.maxY - 10
+                        wander.wanderState = .walking
+                        break
+                    }
+                }
+                if body.velocity.dx < 0 && wall.side == .right {
+                    if globalPos.x <= wall.x + wallMargin && globalPos.x > wall.x - 20 {
+                        tracker.startClimbingWindowWall(wall: wall, body: body)
+                        body.velocity = CGVector(dx: 0, dy: WanderBehavior.climbSpeed)
+                        wander.targetPosition = wall.maxY - 10
+                        wander.wanderState = .walking
+                        break
+                    }
+                }
+            }
+
+            // Only check further transitions if we didn't already transition above
+            if tracker.currentSurface == previousSurface {
+                // Check for screen edge → start wall climbing
+                if globalPos.x <= screenBounds.minX + Self.edgeMargin + 5 {
+                    tracker.startClimbingScreenWall(isLeftWall: true, body: body)
+                    body.velocity = CGVector(dx: 0, dy: WanderBehavior.climbSpeed)
+                    wander.targetPosition = screenBounds.maxY - 60
+                    wander.wanderState = .walking
+                } else if globalPos.x >= screenBounds.maxX - Self.edgeMargin - 5 {
+                    tracker.startClimbingScreenWall(isLeftWall: false, body: body)
+                    body.velocity = CGVector(dx: 0, dy: WanderBehavior.climbSpeed)
+                    wander.targetPosition = screenBounds.maxY - 60
+                    wander.wanderState = .walking
+                }
+
+                // Check if walked off ledge
+                if tracker.currentSurface == .ledge {
+                    let leftEdge = (tracker.currentLedgeMinX ?? screenBounds.minX) + 10
+                    let rightEdge = (tracker.currentLedgeMaxX ?? screenBounds.maxX) - 10
+                    if globalPos.x < leftEdge || globalPos.x > rightEdge {
+                        tracker.startFalling(body: body)
+                    }
+                }
+            }
+
+        case .leftWall, .rightWall:
+            let isLeftWall = tracker.currentSurface == .leftWall
+            let ceilingY = screenBounds.maxY - 50
+
+            if globalPos.y >= ceilingY {
+                tracker.transitionToCeiling(body: body)
+                body.velocity = CGVector(dx: isLeftWall ? WanderBehavior.moveSpeed : -WanderBehavior.moveSpeed, dy: 0)
+                wander.targetPosition = CGFloat.random(in: (screenBounds.minX + 100)...(screenBounds.maxX - 100))
+                wander.wanderState = .walking
+            } else if globalPos.y <= screenBounds.minY + 5 {
+                tracker.landOnFloor(y: screenBounds.minY, screenBounds: screenBounds, body: body)
+                body.velocity = .zero
+                wander.targetPosition = globalPos.x
+                wander.startIdling(stuck: false)
+            }
+
+        case .windowWall(let wallX, let side):
+            guard let wallMinY = tracker.currentWallMinY,
+                  let wallMaxY = tracker.currentWallMaxY else {
+                tracker.startFalling(body: body)
+                break
+            }
+
+            // Top transition — land on ledge
+            if globalPos.y >= wallMaxY - 5 {
+                if let ledge = ledges.first(where: { abs($0.y - wallMaxY) < 10 && $0.contains(x: globalPos.x) }) {
+                    tracker.landOnLedge(ledge, body: body)
+                } else {
+                    tracker.currentSurface = .ledge
+                    tracker.currentLedgeY = wallMaxY
+                    if side == .left {
+                        tracker.currentLedgeMinX = wallX
+                        tracker.currentLedgeMaxX = wallX + 200
+                    } else {
+                        tracker.currentLedgeMinX = wallX - 200
+                        tracker.currentLedgeMaxX = wallX
+                    }
+                    body.fieldBitMask = GravityCategory.down
+                }
+                body.velocity = .zero
+                tracker.clearAllCaches()
+                wander.targetPosition = globalPos.x
+                wander.startIdling(stuck: false)
+            } else if globalPos.y <= wallMinY + 5 {
+                // Bottom transition
+                body.velocity = .zero
+                if let ledge = ledges.first(where: { abs($0.y - wallMinY) < 10 && $0.contains(x: globalPos.x) }) {
+                    tracker.landOnLedge(ledge, body: body)
+                } else if wallMinY <= screenBounds.minY + 10 {
+                    tracker.landOnFloor(y: screenBounds.minY, screenBounds: screenBounds, body: body)
+                } else {
+                    tracker.startFalling(body: body)
+                }
+                wander.targetPosition = globalPos.x
+                wander.startIdling(stuck: true)
+            }
+
+        case .ceiling:
+            // Check for wall transitions at edges
+            if globalPos.x <= screenBounds.minX + Self.edgeMargin + 5 {
+                tracker.startClimbingScreenWall(isLeftWall: true, body: body)
+                body.velocity = CGVector(dx: 0, dy: -WanderBehavior.climbSpeed)
+                wander.targetPosition = screenBounds.minY + 100
+                wander.wanderState = .walking
+            } else if globalPos.x >= screenBounds.maxX - Self.edgeMargin - 5 {
+                tracker.startClimbingScreenWall(isLeftWall: false, body: body)
+                body.velocity = CGVector(dx: 0, dy: -WanderBehavior.climbSpeed)
+                wander.targetPosition = screenBounds.minY + 100
+                wander.wanderState = .walking
+            } else if wander.checkForLedgeDrop(position: globalPos, screenBounds: screenBounds, ledges: ledges) {
+                // Check for ledge drop
+                tracker.startFalling(body: body)
+                body.velocity = CGVector(dx: 0, dy: -50)
+            }
+
+        case .falling:
+            break
+        }
+
+        // Record transition time to prevent rapid back-and-forth at corners
+        if tracker.currentSurface != previousSurface {
+            lastTransitionTime[id] = now
+        }
     }
 }
 

@@ -30,10 +30,20 @@ final class SpriteSceneController {
     let scene: SpriteScene
     private var pendingReveal = false
 
+    /// Cached screen origin — updated when frame changes. Avoids NSScreen lookups in hot path.
+    private(set) var screenOrigin: CGPoint
+    /// Cached screen frame
+    private(set) var screenFrame: CGRect
+    /// Cached visible frame
+    private(set) var screenVisibleFrame: CGRect
+
     private let logger = Logger(subsystem: "com.agentsprites.app", category: "SpriteSceneController")
 
     init(screen: NSScreen) {
         self.displayID = screen.displayID
+        self.screenOrigin = screen.frame.origin
+        self.screenFrame = screen.frame
+        self.screenVisibleFrame = screen.visibleFrame
 
         let panel = NSPanel(
             contentRect: screen.frame,
@@ -140,6 +150,9 @@ final class SpriteSceneController {
     func updateFrame(for screen: NSScreen) {
         panel.setFrame(screen.frame, display: true)
         scene.size = screen.frame.size
+        screenOrigin = screen.frame.origin
+        screenFrame = screen.frame
+        screenVisibleFrame = screen.visibleFrame
     }
 
     /// Called each animation frame to toggle ignoresMouseEvents based on mouse position.
