@@ -148,17 +148,11 @@ final class SpriteSceneController {
 
     /// Update the panel frame to match current screen bounds
     func updateFrame(for screen: NSScreen) {
-        let oldFrame = screenFrame
         panel.setFrame(screen.frame, display: true)
         scene.size = screen.frame.size
         screenOrigin = screen.frame.origin
         screenFrame = screen.frame
         screenVisibleFrame = screen.visibleFrame
-
-        // Rebuild boundary physics bodies if screen geometry changed
-        if oldFrame != screen.frame || screenVisibleFrame != screen.visibleFrame {
-            scene.setupBoundaries(visibleFrame: screen.visibleFrame, screenFrame: screen.frame)
-        }
     }
 
     /// Called each animation frame to toggle ignoresMouseEvents based on mouse position.
